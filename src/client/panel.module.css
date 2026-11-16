@@ -1,0 +1,1411 @@
+/*
+ * The call-history panel's styles.
+ *
+ * Deliberately theme-neutral: surfaces are translucent greys, text colour is
+ * inherited, and only the theme's own alias tokens are used for the footer
+ * entry (which sits among the shell's other footer buttons). That keeps the
+ * panel readable under both the light and the dark shell.
+ */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  font-size: 12px;
+  line-height: 1.45;
+  color: inherit;
+}
+
+/* ── header ─────────────────────────────────────────────────────────────── */
+
+.header {
+  flex: 0 0 auto;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.headerTitle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.headerAge {
+  font-weight: 400;
+  opacity: 0.6;
+}
+
+.factLabel {
+  opacity: 0.65;
+  white-space: nowrap;
+}
+
+.factValue {
+  overflow-wrap: anywhere;
+}
+
+.mono {
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+}
+
+/* Editor row: endpoint on the left, process identity pushed to the right.
+   Wrapping keeps both readable in a narrow sidebar; the identity is ellipsized
+   rather than pushing the IP off the line. */
+.editorRow {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  opacity: 0.85;
+}
+
+.editorIdentity {
+  margin-left: auto;
+  min-width: 0;
+  max-width: 100%;
+  opacity: 0.7;
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── toolbar ────────────────────────────────────────────────────────────── */
+
+.toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+}
+
+.button {
+  flex: 0 0 auto;
+  appearance: none;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  background: rgba(128, 128, 128, 0.15);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.filter {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 24px;
+  appearance: none;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.filter:focus {
+  outline: none;
+  border-color: var(--dsw-alias-brand-primary, #4f7cff);
+}
+
+/* The native clear glyph is a gradient image in Chromium; a monochrome mask
+   keeps it a flat theme colour in both themes. */
+.filter::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-left: 4px;
+  background-color: currentColor;
+  color: var(--dsw-alias-brand-primary, #4f7cff);
+  opacity: 1;
+  cursor: pointer;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 2l8 8M10 2l-8 8' stroke='black' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") center / 10px 10px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 2l8 8M10 2l-8 8' stroke='black' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") center / 10px 10px no-repeat;
+}
+
+.filter::placeholder {
+  color: inherit;
+  opacity: 0.5;
+}
+
+.toolbarButton {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.toolbarButton:hover,
+.toolbarButton[aria-expanded='true'] {
+  opacity: 1;
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.15));
+}
+
+/* DSH-style tooltip: dark bubble from the theme's tooltip tokens. */
+.toolbarButton[data-unreal-tooltip] {
+  position: relative;
+}
+
+.toolbarButton[data-unreal-tooltip]::after {
+  content: attr(data-unreal-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 1100;
+  padding: 3px 7px;
+  border-radius: var(--dsw-radius-sm, 4px);
+  background: var(--dsw-alias-tooltip-bg, rgba(32, 34, 38, 0.95));
+  color: var(--dsw-static-neutral-bluish-00, #fff);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.toolbarButton[data-unreal-tooltip]:hover::after,
+.toolbarButton[data-unreal-tooltip]:focus-visible::after {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* Confirmation dialog, following DSH's modal surface and button sizes. */
+.modalRoot {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.modalMask {
+  position: absolute;
+  inset: 0;
+  background: var(--dsw-alias-bg-mask-1, rgba(0, 0, 0, 0.4));
+  backdrop-filter: var(--dsw-mask-blur, blur(4px));
+}
+
+.modalDialog {
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: min(420px, 100%);
+  padding: 0 0 24px;
+  overflow: hidden;
+  border-radius: var(--dsw-radius-panel, 12px);
+  background: var(--dsw-alias-bg-layer-2, #fff);
+  box-shadow: var(--dsw-elevation-prominent);
+  color: var(--dsw-alias-label-primary, inherit);
+}
+
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 22px 14px 12px 24px;
+}
+
+.modalTitle {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+}
+
+.modalClose {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-sm, 4px);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, inherit);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.modalClose:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.15));
+}
+
+.modalDescription {
+  margin: 0;
+  padding: 0 24px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.modalFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 24px;
+}
+
+.dialogButtonOutline,
+.dialogButtonDanger {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--dsw-radius-md, 8px);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.dialogButtonOutline {
+  border: 0;
+  box-shadow: inset 0 0 0 0.5px var(--dsw-alias-border-l3, rgba(128, 128, 128, 0.4));
+  background: transparent;
+  color: var(--dsw-alias-label-primary, inherit);
+}
+
+.dialogButtonOutline:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.15));
+}
+
+.dialogButtonDanger {
+  border: 0;
+  background: var(--dsw-alias-state-error-primary, #d94a4a);
+  color: #fff;
+}
+
+.dialogButtonDanger:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.dialogButtonOutline:disabled,
+.dialogButtonDanger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.menuPopover {
+  position: fixed;
+  z-index: 1000;
+  min-width: 220px;
+  max-height: min(70vh, 560px);
+  overflow: auto;
+  padding: 6px;
+  border: 0.5px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.3));
+  border-radius: var(--dsw-radius-lg, 8px);
+  background: var(--dsw-specific-menu, var(--dsw-alias-bg-layer-1, #fff));
+  backdrop-filter: var(--dsw-menu-backdrop-filter);
+  box-shadow: var(--dsw-elevation-panel);
+}
+
+.menuBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.menuHeading {
+  padding: 5px 8px 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+.menuCheck {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border-radius: var(--dsw-radius-md, 5px);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.menuCheck:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.15));
+}
+
+.menuCheck input {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--dsw-alias-brand-primary, #4f7cff);
+}
+
+.menuDivider {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(128, 128, 128, 0.18);
+}
+
+.menuEmpty {
+  padding: 4px 8px;
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--dsw-radius-md, 5px);
+  background: transparent;
+  color: var(--dsw-alias-label-primary, inherit);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menuItem:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.16));
+}
+
+.menuItem:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* CSS Custom Highlight API: filter matches in rendered card text. */
+:global(::highlight(unreal-filter-match)) {
+  background-color: var(--dsw-alias-state-warning-primary, #f2c94c);
+  color: #1f1f1f;
+}
+
+.scroller {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* The footer mirror of the silent snapshot poll. */
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* One history record: a card that is always expanded. Its only fold is the
+   Raw data disclosure at the bottom. */
+.row {
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.05);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* One bottom inset for every card, body or not. */
+  padding-bottom: 8px;
+}
+
+.rowFailed {
+  border-color: rgba(208, 80, 63, 0.5);
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px 0;
+}
+
+/* The call time follows the action title, inline after its last line. */
+.cardTime {
+  font-size: 10.5px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.5;
+  white-space: nowrap;
+  margin-left: 6px;
+}
+
+/* Action-first: the verb and its target are the card's identity. */
+.cardTitle {
+  min-width: 0;
+  font-weight: 600;
+  font-size: 12.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+/* A failed action paints the WHOLE title, not just a status dot. */
+.cardTitleFail {
+  color: #d0503f;
+}
+
+.cardError {
+  color: #d0503f;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 3px 10px 0;
+  overflow-wrap: anywhere;
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 2px 10px 0;
+}
+
+/* A card with no structured body (e.g. a successful ping) must not leave an
+   empty padded strip under the title. */
+.cardBody:empty {
+  display: none;
+}
+
+.chevron {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 9px;
+  height: 10px;
+  opacity: 0.7;
+  transition: transform 0.12s ease;
+}
+
+.chevron svg {
+  display: block;
+  width: 9px;
+  height: 10px;
+  overflow: visible;
+}
+
+.chevron[data-expanded='true'] {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
+  }
+}
+
+/* ── transcript tool view ───────────────────────────────────────────────── */
+
+/* The shell owns the row's padding; the wrapper only spaces the card. */
+.toolview {
+  display: block;
+  margin: 2px 0;
+  min-width: 0;
+}
+
+.toolviewState {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  opacity: 0.65;
+  white-space: nowrap;
+}
+
+.toolviewDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: unreal-toolview-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes unreal-toolview-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toolviewDot { animation: none; opacity: 0.8; }
+}
+
+
+
+/* ── expanded payloads ──────────────────────────────────────────────────── */
+
+.details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 10px 9px;
+}
+
+.detailSection {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.detailLabel {
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+
+.payload {
+  margin: 0;
+  padding: 5px 7px;
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.12);
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.detailMeta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  opacity: 0.7;
+}
+
+/* ── typed Details ──────────────────────────────────────────────────────── */
+
+.detailsView {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sectionTitle {
+  font-weight: 600;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.fieldTable {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(128, 128, 128, 0.28);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.fieldTable > .fieldRow:last-child {
+  border-bottom: none;
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns: var(--unreal-grid-template, repeat(3, minmax(0, 1fr)));
+  gap: 6px;
+  align-items: baseline;
+  padding: 3px 7px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.14);
+  font-size: 11px;
+  box-sizing: border-box;
+}
+
+/* Every boxed table shares the same vertical column rules; the resizer handle
+   sits on each header boundary. */
+.fieldTable .fieldRow > span,
+.treeTable .fieldRow > span {
+  border-right: 1px solid rgba(128, 128, 128, 0.16);
+  box-sizing: border-box;
+}
+
+.fieldTable .fieldRow > span:last-child,
+.treeTable .fieldRow > span:last-child {
+  border-right: none;
+}
+
+.fieldTable .fieldRow {
+  align-items: center;
+}
+
+.fieldHeader > span,
+.treeFlatHeader > span {
+  position: relative;
+}
+
+.colResizer {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  right: -5px;
+  z-index: 3;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.colResizer::after {
+  content: '';
+  position: absolute;
+  top: 15%;
+  bottom: 15%;
+  left: 50%;
+  width: 1px;
+  background: rgba(128, 128, 128, 0.2);
+}
+
+.colResizer:hover::after {
+  background: rgba(128, 128, 128, 0.55);
+}
+
+.fieldRow:last-child {
+  border-bottom: none;
+}
+
+.fieldRow:nth-child(odd) {
+  background: rgba(128, 128, 128, 0.05);
+}
+
+.fieldHeader {
+  font-family: inherit;
+  font-weight: 600;
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.18) !important;
+  align-items: center;
+}
+
+/* Header labels are prose, not field identifiers: default UI font, inset 10px
+   from the column edge so they sit clearly above the data rows. */
+.fieldHeader > span {
+  padding-left: 0;
+  font-family: inherit;
+  opacity: 0.8;
+}
+
+.fieldName {
+  font-family: var(--dsh-font-family, inherit);
+  overflow-wrap: anywhere;
+}
+
+/* A permanent slot matching the tree toggle keeps names and headers aligned
+   whether a row can expand or not. */
+.fieldNameCell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* A localized label (e.g. 默认返回值) is prose, not an identifier: keep the
+   UI font instead of the monospace field font. */
+.fieldNameText {
+  font-family: inherit;
+  overflow-wrap: anywhere;
+}
+
+.fieldType {
+  font-family: inherit;
+  font-size: 10px;
+  opacity: 0.75;
+  /* Short labels only, so the Type column never wraps mid-identifier; the full
+     canonical string is the cell's title. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fieldTypeMuted {
+  opacity: 0.4;
+}
+
+.fieldDirection {
+  opacity: 0.65;
+  font-size: 10px;
+}
+
+.fieldValue {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fieldNote {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+/* A recorded screenshot, rendered in the card from the host's on-demand bytes. */
+.screenshotSection {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.screenshotThumb {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+/* A small in-card thumbnail; a click opens the full-size picture. */
+.screenshotImage {
+  display: block;
+  max-width: 100%;
+  max-height: 120px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  object-fit: contain;
+}
+
+.screenshotOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+  cursor: zoom-out;
+}
+
+.screenshotFull {
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: 8px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+
+/* One batch call's nested card inside a calls section (no time: the batch has it). */
+.batchCalls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* One batch call's nested card: the same card shell as a history row. */
+.batchCall {
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.05);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 8px;
+}
+
+.batchCallFail {
+  border-color: rgba(208, 80, 63, 0.5);
+}
+
+.batchCallHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 7px 10px 0;
+}
+
+.batchCallTitle {
+  font-weight: 600;
+  font-size: 12.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.batchCallStatus {
+  flex: none;
+  font-size: 10.5px;
+  opacity: 0.5;
+}
+
+.batchCallLine {
+  margin-top: 3px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  min-width: 0;
+}
+
+.batchCallLabel {
+  flex: none;
+  opacity: 0.55;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.batchCallCode {
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 10.5px;
+  opacity: 0.85;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.batchCallError {
+  color: #d0503f;
+}
+
+.enumLabel {
+  opacity: 0.8;
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 10px;
+}
+
+.valueScalar {
+  font-family: inherit;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.valueString {
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-secondary, inherit);
+}
+
+/* Read-only boolean value in a Details table. */
+.valueBool {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  vertical-align: middle;
+  pointer-events: none;
+  opacity: 0.9;
+  accent-color: var(--dsw-alias-brand-primary, #4f7cff);
+}
+
+.tree {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.treeToggle {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 11px;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  opacity: 0.9;
+}
+
+.treeToggle:hover {
+  opacity: 1;
+}
+
+.treeSummary {
+  opacity: 0.85;
+}
+
+/* A flattened tree also gets the same table frame. */
+.treeTable {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  width: 100%;
+  border: 1px solid rgba(128, 128, 128, 0.24);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.treeToggle {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.75;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+}
+
+.treeLabel {
+  font-family: inherit;
+  overflow-wrap: anywhere;
+}
+
+.treeChildren {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+}
+
+.treeRow {
+  display: grid;
+  grid-template-columns: minmax(90px, 1.1fr) minmax(90px, 1fr) minmax(140px, 2fr);
+  gap: 6px;
+  align-items: baseline;
+  width: 100%;
+  padding: 3px 7px;
+  box-sizing: border-box;
+}
+
+.treeRootRow {
+  display: grid;
+  grid-template-columns: minmax(90px, 1.1fr) minmax(90px, 1fr) minmax(140px, 2fr);
+  gap: 6px;
+  align-items: baseline;
+  width: 100%;
+  border-bottom: none;
+  background: rgba(128, 128, 128, 0.06);
+}
+
+.treeRootName {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* Pin the three columns explicitly: a missing type cell must not pull the value
+   into the middle column. */
+.treeRow > .treeName {
+  grid-column: 1;
+}
+
+.treeRow > .treeType {
+  grid-column: 2;
+}
+
+.treeRow > .treeValue {
+  grid-column: 3;
+}
+
+.treeChildren .treeName {
+  padding-left: 16px;
+}
+
+/* Zebra rows, like the Info tables: no hairline through a row. */
+.treeChildren > .treeRow {
+  border-bottom: none;
+}
+
+.treeChildren > .treeRow:nth-child(odd) {
+  background: rgba(128, 128, 128, 0.06);
+}
+
+.treeChildren > .treeRow:nth-child(even) {
+  background: transparent;
+}
+
+/* A flattened tree: one ordinary row per visible node, so the three columns and
+   the zebra stripes never depend on nesting. */
+.treeFlatHeader {
+  display: grid;
+  grid-template-columns: var(--unreal-grid-template, repeat(3, minmax(0, 1fr)));
+  gap: 6px;
+  align-items: center;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.14) !important;
+  background: rgba(128, 128, 128, 0.18) !important;
+}
+
+.treeFlatRows {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+}
+
+.treeFlatRow {
+  display: grid;
+  grid-template-columns: var(--unreal-grid-template, repeat(3, minmax(0, 1fr)));
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  border-bottom: none;
+}
+
+.treeFlatHeader4,
+.treeFlatRow4 {
+  grid-template-columns: minmax(100px, 1.1fr) minmax(90px, 1fr) 60px minmax(140px, 2fr);
+}
+
+.treeDirection {
+  font-size: 10px;
+  opacity: 0.65;
+}
+
+.treeFlatRows > .treeFlatRow {
+  border-bottom: 1px solid rgba(128, 128, 128, 0.14);
+}
+
+.treeFlatRows > .treeFlatRow:last-child {
+  border-bottom: none;
+}
+
+.treeFlatRows > .treeFlatRow:nth-child(odd) {
+  background: rgba(128, 128, 128, 0.06);
+}
+
+.treeFlatRows > .treeFlatRow:nth-child(even) {
+  background: transparent;
+}
+
+.treeToggleSpacer {
+  display: inline-block;
+  flex: none;
+  width: 12px;
+}
+
+.treeNameText {
+  font-family: inherit;
+}
+
+.treeHeader {
+  display: grid;
+  grid-template-columns: minmax(90px, 1.1fr) minmax(90px, 1fr) minmax(140px, 2fr);
+  gap: 6px;
+  padding-bottom: 2px;
+  border-bottom: none;
+  background: rgba(128, 128, 128, 0.1);
+  font-size: 10px;
+  opacity: 0.55;
+}
+
+.treeName {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-family: inherit;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.treeType {
+  font-size: 10px;
+  opacity: 0.55;
+  font-family: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.treeValue {
+  min-width: 0;
+}
+
+.changeRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.changeTables {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.changeArrow {
+  align-self: center;
+  opacity: 0.5;
+  font-size: 11px;
+}
+
+.detailNote {
+  opacity: 0.65;
+  font-style: italic;
+  font-size: 11px;
+}
+
+.rawJson {
+  border-top: 1px dashed rgba(128, 128, 128, 0.25);
+  padding-top: 5px;
+  margin-top: 1px;
+}
+
+.rawSummary {
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 11px;
+  user-select: none;
+  list-style: none;
+}
+
+.rawSummary::-webkit-details-marker {
+  display: none;
+}
+
+.rawSummary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 4px;
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.rawJson[open] > .rawSummary::before {
+  content: '▾';
+}
+
+.rawSummary:hover {
+  opacity: 0.9;
+}
+
+.rawContent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+/* The metadata grid of the Raw data disclosure: label / value pairs. */
+.rawMeta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1px 8px;
+  font-size: 11px;
+}
+
+.rawMetaKey {
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+.rawMetaValue {
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  overflow-wrap: anywhere;
+}
+
+.rawBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+/* ── states ─────────────────────────────────────────────────────────────── */
+
+.state {
+  padding: 12px 10px;
+  opacity: 0.8;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stateTitle {
+  font-weight: 600;
+}
+
+.stateHint {
+  opacity: 0.75;
+}
+
+.errorBox {
+  margin: 8px 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(208, 80, 63, 0.5);
+  border-radius: 6px;
+  background: rgba(208, 80, 63, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.errorMessage {
+  overflow-wrap: anywhere;
+}
+
+/* ── the sidebar footer opener and the tab chip ─────────────────────────── */
+
+/* Geometry mirrors the sibling plugins' footer entries: a 42px full-width row
+   while the sidebar is wide, and a 36x36 circle in the 56px rail. */
+.opener {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: none;
+  width: calc(100% + 4px);
+  height: 42px;
+  margin: 4px -2px 4px;
+  padding: 0 10px 0 8px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary, inherit);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.opener:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.15));
+}
+
+.openerRail {
+  flex: none;
+  justify-content: center;
+  gap: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  margin: 8px 0 10px;
+}
+
+.openerLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openerGlyph {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  /* Leave room for the shell's close button, which sits over the tab tail. */
+  padding-right: 16px;
+}
+
+/* Let this plugin's tab grow with its title instead of the shell's fixed 170px.
+   `:has` keeps the override on OUR tab only; the chip carries the marker. */
+:global([role='tab']:has([data-unreal-chip])) {
+  max-width: 320px;
+}
+
+/* The per-card three-dot menu: one radio item toggles the Raw data fold. */
+.cardMenuHost {
+  position: relative;
+  flex: none;
+  margin-left: auto;
+  align-self: flex-start;
+}
+
+.cardMenuButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.cardMenuButton:hover,
+.cardMenuButton[aria-expanded='true'] {
+  opacity: 1;
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.16));
+}
+
+.cardMenuList {
+  position: fixed;
+  z-index: 1000;
+  min-width: 132px;
+  padding: 4px;
+  border: 0.5px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.3));
+  border-radius: var(--dsw-radius-lg, 8px);
+  background: var(--dsw-specific-menu, var(--dsw-alias-bg-layer-1, #fff));
+  backdrop-filter: var(--dsw-menu-backdrop-filter);
+  box-shadow: var(--dsw-elevation-panel);
+}
+
+.cardMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--dsw-radius-md, 5px);
+  background: transparent;
+  color: var(--dsw-alias-label-primary, inherit);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cardMenuItem:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.16));
+}
+
+.cardMenuRadio {
+  flex: none;
+  width: 12px;
+  font-size: 11px;
+  line-height: 1;
+  text-align: center;
+  opacity: 0.9;
+}

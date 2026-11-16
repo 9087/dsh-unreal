@@ -1,0 +1,105 @@
+{
+  "name": "dsh-unreal",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: drive the Unreal EditorAutomation plugin through Remote Control, with a per-session durable call history in the right sidebar",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=24.0"
+  },
+  "author": "Wu Zhiwei",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/9087/dsh-unreal.git"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/client.js.map",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml",
+    "docs/images/**"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.json && tsdown --env.DSH_BUILD_FACE client",
+    "build:host": "tsc -b tsconfig.json",
+    "build:client": "tsdown --env.DSH_BUILD_FACE client",
+    "typecheck": "tsc -b tsconfig.json",
+    "typecheck:test": "tsc -p tsconfig.test.json",
+    "test": "node --test-isolation=none --test \"tests/**/*.test.ts\"",
+    "e2e": "playwright test",
+    "screenshots": "node scripts/screenshots.mjs",
+    "prepare": "tsc -b tsconfig.json && tsdown --env.DSH_BUILD_FACE client"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-storage-domain": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-util-values": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0",
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-util-values": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-storage-domain": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    },
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-storage": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-storage-json": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-util-values": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0",
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.1",
+    "lightningcss": "^1.32.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "zod": "4.4.3"
+  }
+}

@@ -1,0 +1,6 @@
+# Profile layer contributed by this bundle. `dsh plugin --profile <name> add`
+# installs the package and appends its name to the profile's
+# `dsh.profile.bundles`, which is what makes this patch compose.
+- insert:
+    - id: unreal
+      name: dsh-unreal

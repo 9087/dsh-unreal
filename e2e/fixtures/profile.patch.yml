@@ -1,0 +1,13 @@
+# e2e-only overlay, applied last, after every bundle layer.
+#
+# - `unreal` config: the startup liveness probe is disabled, so the stand-in
+#   Remote Control endpoint never receives a request before the fixture that
+#   starts it is mounted. (The probe is also what would make the request counts
+#   below timing-dependent.)
+# - the fixture row publishes the live session and drives the real tools.
+- id: unreal
+  config:
+    preflight: false
+- insert:
+    - id: e2e-seed-unreal
+      name: ./seed-session.mjs

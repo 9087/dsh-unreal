@@ -1,0 +1,9 @@
+node_modules/
+lib/
+.pnpm-store/
+.pnpm-cache/
+*.tsbuildinfo
+*.log
+playwright-report/
+test-results/
+scratch/
