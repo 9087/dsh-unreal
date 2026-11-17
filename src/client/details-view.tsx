@@ -302,6 +302,11 @@ function containerInfo(type: string | undefined): { kind: 'array' | 'set' | 'map
   return { kind, key: inner.slice(0, split).trim(), value: inner.slice(split + 1).trim() }
 }
 
+/** Whether a Type string names a struct (the only container element whose members are kept). */
+function isStructType(type: string | undefined): boolean {
+  return type !== undefined && type.trim().startsWith('struct(')
+}
+
 /** One visible row of the flattened tree table. */
 interface FlatTreeRow {
   readonly key: string
@@ -381,8 +386,11 @@ function flattenTreeRows(
       return
     }
     if (container !== undefined) {
+      // A container of structs carries the member types resolved for its element
+      // struct, so expanding one element can label that struct's fields.
+      const elementMembers = isStructType(container.value) ? members : undefined
       for (const [entryName, entryValue] of entries) {
-        walk(entryName, container.value, entryValue, undefined, depth + 1, `${path}.${entryName}`, undefined, entryName)
+        walk(entryName, container.value, entryValue, elementMembers, depth + 1, `${path}.${entryName}`, undefined, entryName)
       }
       return
     }

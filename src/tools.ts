@@ -98,6 +98,25 @@ export const OWNED_TOOLS: ReadonlySet<string> = new Set([
   'unreal_get_widget_tree_diff',
   'unreal_reset_widget_tree_diff_cache',
   'unreal_get_widget_geometry',
+  'unreal_widget_click',
+  'unreal_focus_widget',
+  'unreal_send_key_with_modifiers',
+  'unreal_send_text',
+  'unreal_widget_mouse_move',
+  'unreal_widget_mouse_wheel',
+  'unreal_widget_drag',
+  'unreal_is_mouse_input_pending',
+  'unreal_get_list_view_info',
+  'unreal_get_list_entry_info',
+  'unreal_scroll_to_list_entry',
+  'unreal_scroll_to_list_entry_and_click',
+  'unreal_capture_widget_screenshot',
+  'unreal_is_widget_variable',
+  'unreal_get_user_widget_root',
+  'unreal_get_widget_text_active_states',
+  'unreal_get_dirty_assets',
+  'unreal_save_dirty_assets',
+  'unreal_get_blueprint_lua_path',
   'unreal_get_blueprint_info',
   'unreal_set_blueprint_dirty',
   'unreal_compile_blueprint',
@@ -456,6 +475,7 @@ function viewFunctions(functions: readonly FunctionView[]): {
   static: boolean
   parameters: { name: string; displayNameText: unknown; type: string; direction: string }[]
   returnType: string
+  toolTip: string
 }[] {
   return functions.map(fn => ({
     name: fn.name,
@@ -470,6 +490,7 @@ function viewFunctions(functions: readonly FunctionView[]): {
       direction: parameter.direction,
     })),
     returnType: fn.returnType,
+    toolTip: fn.tooltip,
   }))
 }
 
@@ -952,7 +973,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
   ctx.tools.register(defineTool({
     name: 'unreal_get_function_info',
     description:
-      `Describe one BlueprintCallable function of a class: its parameters (names, canonical Types, directions) and its return Type. Use it to learn the exact parameter keys for unreal_call_function —keys are C++ parameter names, not display names —and to know which out parameters come back. ${WIRE_CONVENTIONS}`,
+      `Describe one BlueprintCallable function of a class: its parameters (names, canonical Types, directions), its return Type and its editor tooltip. Use it to learn the exact parameter keys for unreal_call_function —keys are C++ parameter names, not display names —and to know which out parameters come back. ${WIRE_CONVENTIONS}`,
     parameters: {
       type: {
         type: 'string',
@@ -974,6 +995,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           path: { type: 'string', required: true },
           parameters: { type: 'json', required: true },
           returnType: { type: 'string', required: true },
+          tooltip: { type: 'string', required: true },
           text: { type: 'string', required: true },
           truncated: { type: 'boolean', required: true },
           cached: { type: 'boolean', required: true },
@@ -997,11 +1019,13 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           const [mapped] = viewFunctions([info.function])
           const parameters = mapped?.parameters ?? []
           const returnType = mapped?.returnType ?? ''
+          const toolTip = mapped?.toolTip ?? ''
           const lines = [
             `${info.path}(${parameters.map(parameter => `${parameter.name}: ${parameter.type}`).join(', ')})${returnType === '' ? '' : ` -> ${returnType}`}`,
             `Parameters (${parameters.length}):`,
           ]
           for (const parameter of parameters) lines.push(`  ${parameter.direction} ${parameter.name}: ${parameter.type}`)
+          if (toolTip !== '') lines.push('', `ToolTip: ${toolTip}`)
           const rendered = clip(lines.join('\n'), 12_000)
           return {
             value: {
@@ -1009,6 +1033,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
               path: info.path,
               parameters: toJson(parameters),
               returnType,
+              tooltip: toolTip,
               text: rendered.text,
               truncated: rendered.truncated,
               cached: lookup.cached,
@@ -1960,6 +1985,489 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
     },
   }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
 
+  // ----- Widget input (synthetic Slate events; EditorAutomation Input library) -----
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_widget_click',
+    description:
+      'Click one UMG widget at a normalized point inside it (0..1, default centered) through Slate\'s own event pipeline. Supports mouse button, single/double click and agnostic Ctrl/Alt/Shift/Cmd modifiers. The widget must already be drawn (its cached geometry exists); use unreal_get_widget_geometry to confirm. Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UWidget UObject path.' },
+      button: { type: 'string', description: 'Mouse button FKey name; default LeftMouseButton.' },
+      clickType: { type: 'string', enum: ['single', 'double'], description: 'single (default) or double click.' },
+      relativeX: { type: 'number', description: 'Normalized X inside the widget (0..1); default 0.5.' },
+      relativeY: { type: 'number', description: 'Normalized Y inside the widget (0..1); default 0.5.' },
+      control: { type: 'boolean', description: 'Hold Ctrl during the click.' },
+      alt: { type: 'boolean', description: 'Hold Alt during the click.' },
+      shift: { type: 'boolean', description: 'Hold Shift during the click.' },
+      command: { type: 'boolean', description: 'Hold Cmd during the click.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: `clicked ${String(value.objectPath)} at (${String(value.relativeX)}, ${String(value.relativeY)})` }],
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      const button = typeof args.button === 'string' && args.button !== '' ? args.button : 'LeftMouseButton'
+      const clickType = args.clickType === 'double' ? 'double' : 'single'
+      const relativeX = typeof args.relativeX === 'number' ? args.relativeX : 0.5
+      const relativeY = typeof args.relativeY === 'number' ? args.relativeY : 0.5
+      return await audited(deps, exec, { tool: 'unreal_widget_click', params: { objectPath, button, clickType, relativeX, relativeY } }, async () => {
+        await requireEditorAutomationBool(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.input, 'SendClick', {
+          Widget: objectPath,
+          Options: clickOptionsJson(button, clickType, relativeX, relativeY, modifierKeysJson(args)),
+        }, objectPath)
+        return { value: { objectPath, button, clickType, relativeX, relativeY }, resultSummary: `clicked ${objectPath}` }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_focus_widget',
+    description: 'Move keyboard focus to one UMG widget and bring its window to the front, so later unreal_send_key_with_modifiers / unreal_send_text reach it. Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UWidget UObject path.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: `focused ${String(value.objectPath)}` }],
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      return await audited(deps, exec, { tool: 'unreal_focus_widget', params: { objectPath } }, async () => {
+        await requireEditorAutomationBool(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.input, 'Focus', { Widget: objectPath }, objectPath)
+        return { value: { objectPath }, resultSummary: `focused ${objectPath}` }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_send_key_with_modifiers',
+    description:
+      'Send one key press (down + up) to the focused Slate widget with explicit Ctrl/Alt/Shift/Cmd modifiers, e.g. Ctrl+S or Shift+Tab. Focus a widget first with unreal_focus_widget, or the PIE viewport with unreal_focus_pie. Requires the umg group.',
+    parameters: {
+      keyName: { type: 'string', required: true, description: 'FKey name, e.g. S, Tab, Space, Enter.' },
+      control: { type: 'boolean', description: 'Hold Ctrl.' },
+      alt: { type: 'boolean', description: 'Hold Alt.' },
+      shift: { type: 'boolean', description: 'Hold Shift.' },
+      command: { type: 'boolean', description: 'Hold Cmd.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: `${value.keyName} sent` }],
+    },
+    async execute(args, exec) {
+      const keyName = requiredString(args.keyName, 'keyName')
+      const modifiers = modifierKeysJson(args)
+      return await audited(deps, exec, { tool: 'unreal_send_key_with_modifiers', params: { keyName } }, async () => {
+        await requireEditorAutomationBool(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.input, 'SendKey', {
+          KeyName: keyName,
+          Modifiers: modifiers ?? {},
+        }, keyName)
+        return { value: { keyName, modifiers: modifiers ?? {} }, resultSummary: `key ${keyName} sent` }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_send_text',
+    description: 'Send a string as character events to the focused widget (focus it first with unreal_focus_widget or unreal_focus_pie). Requires the umg group.',
+    parameters: {
+      text: { type: 'string', required: true, description: 'Text to type.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: `sent ${String(value.text).length} characters` }],
+    },
+    async execute(args, exec) {
+      const text = requiredString(args.text, 'text')
+      return await audited(deps, exec, { tool: 'unreal_send_text', params: { text } }, async () => {
+        await requireEditorAutomationBool(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.input, 'SendText', { Text: text }, 'the focused widget')
+        return { value: { text, characters: text.length }, resultSummary: `${text.length} characters sent` }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_widget_mouse_move',
+    description: 'Move the synthetic mouse pointer over one UMG widget at a normalized point (0..1) with optional modifiers. Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UWidget UObject path.' },
+      relativeX: { type: 'number', description: 'Normalized X inside the widget (0..1); default 0.5.' },
+      relativeY: { type: 'number', description: 'Normalized Y inside the widget (0..1); default 0.5.' },
+      control: { type: 'boolean', description: 'Hold Ctrl.' },
+      alt: { type: 'boolean', description: 'Hold Alt.' },
+      shift: { type: 'boolean', description: 'Hold Shift.' },
+      command: { type: 'boolean', description: 'Hold Cmd.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: `moved over ${String(value.objectPath)}` }],
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      const relativeX = typeof args.relativeX === 'number' ? args.relativeX : 0.5
+      const relativeY = typeof args.relativeY === 'number' ? args.relativeY : 0.5
+      return await audited(deps, exec, { tool: 'unreal_widget_mouse_move', params: { objectPath, relativeX, relativeY } }, async () => {
+        await requireEditorAutomationBool(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.input, 'SendMouseMove', {
+          Widget: objectPath,
+          RelativePosition: { X: String(relativeX), Y: String(relativeY) },
+          ModifierKeys: modifierKeysJson(args) ?? {},
+        }, objectPath)
+        return { value: { objectPath, relativeX, relativeY }, resultSummary: `moved over ${objectPath}` }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_widget_mouse_wheel',
+    description: 'Send one mouse-wheel event at the current pointer position over one UMG widget (positive = scroll up). Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UWidget UObject path.' },
+      delta: { type: 'number', required: true, description: 'Wheel delta, e.g. 1 or -1.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: `wheel ${String(value.delta)} over ${String(value.objectPath)}` }],
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      if (typeof args.delta !== 'number' || !Number.isFinite(args.delta)) {
+        throw new KitError('editorautomation/invalid_argument', 'delta must be a finite number.', { functionName: 'SendMouseWheel' })
+      }
+      const delta = args.delta
+      return await audited(deps, exec, { tool: 'unreal_widget_mouse_wheel', params: { objectPath, delta } }, async () => {
+        await requireEditorAutomationBool(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.input, 'SendMouseWheel', {
+          Widget: objectPath,
+          Delta: delta,
+        }, objectPath)
+        return { value: { objectPath, delta }, resultSummary: `wheel ${delta}` }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  // ----- ListView (virtualized rows) and off-screen widget capture -------------
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_get_list_view_info',
+    description: 'Read the items held by a UMG UListView: item index, item object path and item class. Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UListView widget UObject path.' },
+      maxItems: { type: 'number', description: 'Keep at most this many items; 0 (default) means all.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => {
+        const items = Array.isArray(value.items) ? (value.items as Array<Record<string, JsonValue>>) : []
+        const lines = items.map(item => `${String(item['index'])}: ${String(item['item'])} (${String(item['itemClass'])})`)
+        return [{ type: 'text', text: `${String(value.itemCount)} items\n${lines.join('\n')}` }]
+      },
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      const maxItems = typeof args.maxItems === 'number' ? args.maxItems : 0
+      return await audited(deps, exec, { tool: 'unreal_get_list_view_info', params: { objectPath, maxItems } }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umg, 'GetListViewInfo', {
+          Widget: objectPath,
+          MaxItems: maxItems,
+        })
+        const success = structBool(result.payload, 'bSuccess')
+        if (!success) {
+          throw new KitError('editorautomation/GetListViewInfoFailed', `GetListViewInfo could not read ${objectPath}.`, {
+            functionName: 'GetListViewInfo',
+            hint: 'Call unreal_get_recent_log for the engine log reason.',
+          })
+        }
+        const itemsValue = result.payload === null || typeof result.payload !== 'object' || Array.isArray(result.payload)
+          ? []
+          : (result.payload as Record<string, JsonValue>)['Items'] ?? []
+        const items = payloadStructArray(itemsValue).map(item => ({
+          index: structNumber(item, 'Index'),
+          item: structString(item, 'Item'),
+          itemClass: structString(item, 'ItemClass'),
+        }))
+        return {
+          value: { objectPath, itemCount: structNumber(result.payload, 'ItemCount'), items, count: items.length },
+          resultSummary: `${items.length} items`,
+        }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_get_list_entry_info',
+    description:
+      'Read the row widget of one UListView item. List rows are virtualized: an item off screen reports success=false with no row — call unreal_scroll_to_list_entry to bring it into view first. Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UListView widget UObject path.' },
+      index: { type: 'number', required: true, description: 'Item index.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [
+        {
+          type: 'text',
+          text: value.success === true
+            ? `item ${String(value.index)} row: ${String(value.entryWidget)}`
+            : `item ${String(value.index)} has no row (virtualized out of view)`,
+        },
+      ],
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      if (typeof args.index !== 'number' || !Number.isFinite(args.index)) {
+        throw new KitError('editorautomation/invalid_argument', 'index must be a finite number.', { functionName: 'GetListEntryInfo' })
+      }
+      const index = args.index
+      return await audited(deps, exec, { tool: 'unreal_get_list_entry_info', params: { objectPath, index } }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umg, 'GetListEntryInfo', {
+          Widget: objectPath,
+          Index: index,
+        })
+        const success = structBool(result.payload, 'bSuccess')
+        const entry = {
+          success,
+          index: structNumber(result.payload, 'Index'),
+          entryWidget: structString(result.payload, 'EntryWidget'),
+          entryWidgetClass: structString(result.payload, 'EntryWidgetClass'),
+        }
+        return {
+          value: { objectPath, ...entry },
+          resultSummary: success ? `item ${index} row read` : `item ${index} has no row yet`,
+        }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_scroll_to_list_entry',
+    description: 'Scroll a UListView so the requested item is on screen and return its row widget (creates the row when it was virtualized). Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UListView widget UObject path.' },
+      index: { type: 'number', required: true, description: 'Item index.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [
+        {
+          type: 'text',
+          text: value.success === true
+            ? `item ${String(value.index)} row: ${String(value.entryWidget)}`
+            : `item ${String(value.index)} row still unavailable`,
+        },
+      ],
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      if (typeof args.index !== 'number' || !Number.isFinite(args.index)) {
+        throw new KitError('editorautomation/invalid_argument', 'index must be a finite number.', { functionName: 'ScrollToListEntry' })
+      }
+      const index = args.index
+      return await audited(deps, exec, { tool: 'unreal_scroll_to_list_entry', params: { objectPath, index } }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umg, 'ScrollToListEntry', {
+          Widget: objectPath,
+          Index: index,
+        })
+        const success = structBool(result.payload, 'bSuccess')
+        const value = {
+          objectPath,
+          success,
+          index: structNumber(result.payload, 'Index'),
+          entryWidget: structString(result.payload, 'EntryWidget'),
+          entryWidgetClass: structString(result.payload, 'EntryWidgetClass'),
+        }
+        return { value, resultSummary: success ? `scrolled to item ${index}` : `item ${index} row still unavailable` }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_scroll_to_list_entry_and_click',
+    description:
+      'Scroll a UListView to one item and click its row. A row created by this call has not been drawn yet, so the click is not dispatched in the same call: the tool errors with a retry hint and the next call clicks the now-drawn row. Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UListView widget UObject path.' },
+      index: { type: 'number', required: true, description: 'Item index.' },
+      button: { type: 'string', description: 'Mouse button FKey name; default LeftMouseButton.' },
+      clickType: { type: 'string', enum: ['single', 'double'], description: 'single (default) or double click.' },
+      relativeX: { type: 'number', description: 'Normalized X inside the row (0..1); default 0.5.' },
+      relativeY: { type: 'number', description: 'Normalized Y inside the row (0..1); default 0.5.' },
+      control: { type: 'boolean', description: 'Hold Ctrl.' },
+      alt: { type: 'boolean', description: 'Hold Alt.' },
+      shift: { type: 'boolean', description: 'Hold Shift.' },
+      command: { type: 'boolean', description: 'Hold Cmd.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: `clicked item ${String(value.index)} row` }],
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      if (typeof args.index !== 'number' || !Number.isFinite(args.index)) {
+        throw new KitError('editorautomation/invalid_argument', 'index must be a finite number.', { functionName: 'ScrollToListEntryAndSendClick' })
+      }
+      const index = args.index
+      const button = typeof args.button === 'string' && args.button !== '' ? args.button : 'LeftMouseButton'
+      const clickType = args.clickType === 'double' ? 'double' : 'single'
+      const relativeX = typeof args.relativeX === 'number' ? args.relativeX : 0.5
+      const relativeY = typeof args.relativeY === 'number' ? args.relativeY : 0.5
+      return await audited(deps, exec, { tool: 'unreal_scroll_to_list_entry_and_click', params: { objectPath, index, button, clickType, relativeX, relativeY } }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umg, 'ScrollToListEntryAndSendClick', {
+          Widget: objectPath,
+          Index: index,
+          Options: clickOptionsJson(button, clickType, relativeX, relativeY, modifierKeysJson(args)),
+        })
+        if (!payloadBool(result.payload)) {
+          throw new KitError('editorautomation/ScrollToListEntryAndSendClickFailed', `ScrollToListEntryAndSendClick did not click item ${index} of ${objectPath}.`, {
+            functionName: 'ScrollToListEntryAndSendClick',
+            hint: 'If the row was just created, call this tool again; otherwise call unreal_get_recent_log for the engine reason.',
+          })
+        }
+        return { value: { objectPath, index, button, clickType }, resultSummary: `clicked item ${index}` }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_capture_widget_screenshot',
+    description:
+      'Render one UMG widget off-screen into a PNG (UI included, no viewport needed) through FWidgetRenderer at an optional design resolution. Omit filePath and the adapter writes a uniquely named PNG under its own temp screenshot directory. Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UWidget UObject path.' },
+      filePath: { type: 'string', description: 'Absolute PNG path; omit to let the adapter name a fresh file.' },
+      width: { type: 'number', description: 'Render width in pixels; 0 (default) uses the widget\'s current/desired width.' },
+      height: { type: 'number', description: 'Render height in pixels; 0 (default) uses the widget\'s current/desired height.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [
+        { type: 'text', text: `widget screenshot: ${String(value.filePath)} (${String(value.bytes)} bytes)` },
+      ],
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      const filePath = typeof args.filePath === 'string' ? args.filePath : ''
+      const width = typeof args.width === 'number' ? args.width : 0
+      const height = typeof args.height === 'number' ? args.height : 0
+      const screenshotPath = filePath === '' ? await newScreenshotPath() : filePath
+      let details: CallDetails | undefined
+      return await audited(
+        deps,
+        exec,
+        { tool: 'unreal_capture_widget_screenshot', params: { objectPath, filePath: screenshotPath, width, height }, details: async () => details },
+        async () => {
+          const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umg, 'CaptureWidgetScreenshot', {
+            Widget: objectPath,
+            OutputPath: screenshotPath,
+            Width: width,
+            Height: height,
+          })
+          const resolvedPath = typeof result.payload === 'string' ? result.payload : ''
+          if (resolvedPath === '') {
+            throw new KitError('editorautomation/CaptureWidgetScreenshotFailed', `CaptureWidgetScreenshot returned no PNG path for ${objectPath}.`, {
+              functionName: 'CaptureWidgetScreenshot',
+              hint: 'Call unreal_get_recent_log for the engine log reason.',
+            })
+          }
+          let bytes = 0
+          try {
+            const info = await stat(resolvedPath)
+            if (info.isFile()) bytes = info.size
+          } catch {
+            // The render failed to write; the empty path check above already covers most cases.
+          }
+          const size = bytes > 0 ? await pngSize(resolvedPath) : undefined
+          if (bytes > 0) {
+            details = buildScreenshotDetails({
+              target: 'widget',
+              filePath: resolvedPath,
+              bytes,
+              ...(size === undefined ? {} : { width: size.width, height: size.height }),
+            })
+          }
+          return {
+            value: {
+              objectPath,
+              filePath: resolvedPath,
+              exists: bytes > 0,
+              bytes,
+              ...(size === undefined ? {} : { width: size.width, height: size.height }),
+              errorMessage: '',
+            },
+            resultSummary: bytes > 0 ? `widget screenshot written (${bytes} bytes)` : 'widget screenshot not written',
+          }
+        },
+      )
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_widget_drag',
+    description:
+      'Drag from one normalized point to another inside the same UMG widget. The press → moves → release sequence is driven by a ticker across frames; poll unreal_is_mouse_input_pending to know when it finished. Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UWidget UObject path.' },
+      fromX: { type: 'number', description: 'Drag origin normalized X (0..1); default 0.' },
+      fromY: { type: 'number', description: 'Drag origin normalized Y (0..1); default 0.5.' },
+      toX: { type: 'number', description: 'Drag target normalized X (0..1); default 1.' },
+      toY: { type: 'number', description: 'Drag target normalized Y (0..1); default 0.5.' },
+      steps: { type: 'number', description: 'Move steps between press and release; default 10.' },
+      durationMs: { type: 'number', description: 'Total drag duration in milliseconds; default 500.' },
+      button: { type: 'string', description: 'Mouse button FKey name; default LeftMouseButton.' },
+      control: { type: 'boolean', description: 'Hold Ctrl.' },
+      alt: { type: 'boolean', description: 'Hold Alt.' },
+      shift: { type: 'boolean', description: 'Hold Shift.' },
+      command: { type: 'boolean', description: 'Hold Cmd.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [
+        { type: 'text', text: `drag started on ${String(value.objectPath)}; poll unreal_is_mouse_input_pending for completion` },
+      ],
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      const fromX = typeof args.fromX === 'number' ? args.fromX : 0
+      const fromY = typeof args.fromY === 'number' ? args.fromY : 0.5
+      const toX = typeof args.toX === 'number' ? args.toX : 1
+      const toY = typeof args.toY === 'number' ? args.toY : 0.5
+      const steps = typeof args.steps === 'number' ? args.steps : 10
+      const durationMs = typeof args.durationMs === 'number' ? args.durationMs : 500
+      const button = typeof args.button === 'string' && args.button !== '' ? args.button : 'LeftMouseButton'
+      return await audited(deps, exec, { tool: 'unreal_widget_drag', params: { objectPath, fromX, fromY, toX, toY, steps, durationMs, button } }, async () => {
+        await requireEditorAutomationBool(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.input, 'SendDrag', {
+          Widget: objectPath,
+          Options: {
+            FromRelativePosition: { X: String(fromX), Y: String(fromY) },
+            ToRelativePosition: { X: String(toX), Y: String(toY) },
+            Steps: steps,
+            DurationMs: String(durationMs),
+            Button: button,
+            ModifierKeys: modifierKeysJson(args) ?? {},
+          },
+        }, objectPath)
+        return { value: { objectPath, fromX, fromY, toX, toY, steps, durationMs, button }, resultSummary: `drag started on ${objectPath}` }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_is_mouse_input_pending',
+    description: 'Whether an asynchronous synthetic mouse input (a drag started by unreal_widget_drag) is still running. Requires the umg group.',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: value.pending === true ? 'mouse input pending' : 'no mouse input pending' }],
+    },
+    async execute(_args, exec) {
+      return await audited(deps, exec, { tool: 'unreal_is_mouse_input_pending', params: {} }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.input, 'IsMouseInputPending', {})
+        const pending = payloadBool(result.payload)
+        return { value: { pending }, resultSummary: pending ? 'pending' : 'idle' }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
   ctx.tools.register(defineTool({
     name: 'unreal_get_blueprint_info',
     description:
@@ -2002,6 +2510,26 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           functionName: 'GetBlueprintInfo',
         }
         return { value, resultSummary: `blueprint status=${value.status} dirty=${value.dirty}` }
+      })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_get_blueprint_lua_path',
+    description: 'Read the KGUI/blueprint-editor Lua path bound to one Blueprint (properties named LuaPath on the asset or its generated class). Empty means no Lua binding was found.',
+    parameters: {
+      blueprint: { type: 'string', required: true, description: 'Blueprint object path.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: value.luaPath === '' ? 'no Lua path' : String(value.luaPath) }],
+    },
+    async execute(args, exec) {
+      const blueprint = requiredString(args.blueprint, 'blueprint')
+      return await audited(deps, exec, { tool: 'unreal_get_blueprint_lua_path', params: { blueprint } }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.blueprint, 'GetBlueprintLuaPath', { Blueprint: blueprint })
+        const luaPath = typeof result.payload === 'string' ? result.payload : ''
+        return { value: { blueprint, luaPath }, resultSummary: luaPath === '' ? 'no Lua path' : luaPath }
       })
     },
   }))
@@ -2284,37 +2812,48 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
 
   ctx.tools.register(defineTool({
     name: 'unreal_get_graph_nodes',
-    description: 'List the nodes of an editor graph through the CallFunction dispatcher: object path, class, title and position of each node.',
+    description:
+      'List the nodes of an editor graph through the CallFunction dispatcher: object path, class, title and position, plus semantic fields — memberName (referenced function/variable/event/component), graphObjectPath (graph the node belongs to), targetClassPath (owner class of the referenced function or delegate), delegateName (component-bound event delegate) and subGraphObjectPath (macro/collapsed sub-graph). Set recursive=true to also include every collapsed sub-graph reachable from this graph.',
     parameters: {
       graph: { type: 'string', required: true, description: 'Graph object path (from unreal_get_blueprint_graphs).' },
+      recursive: { type: 'boolean', description: 'Also list nodes of macro and collapsed sub-graphs; default false.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },
       render: (_args, value) => {
         const nodes = Array.isArray(value.nodes) ? (value.nodes as Array<Record<string, JsonValue>>) : []
-        const lines = nodes.map(node => `${String(node['nodeTitle'])} (${String(node['nodeClassPath'])})`)
+        const lines = nodes.map(node =>
+          `${String(node['nodeTitle'])} (${String(node['nodeClassPath'])})${String(node['memberName'] ?? '') === '' ? '' : ` → ${String(node['memberName'])}`}`,
+        )
         return [{ type: 'text', text: value.count === 0 ? 'no nodes' : `${String(value.count)} nodes\n${lines.join('\n')}` }]
       },
     },
     async execute(args, exec) {
       const graph = requiredString(args.graph, 'graph')
-      return await audited(deps, exec, { tool: 'unreal_get_graph_nodes', params: { graph } }, async () => {
-        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.graph, 'GetGraphNodes', { Graph: graph })
+      const recursive = args.recursive === true
+      return await audited(deps, exec, { tool: 'unreal_get_graph_nodes', params: { graph, recursive } }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.graph, 'GetGraphNodes', { Graph: graph, bRecursive: recursive })
         const nodes = payloadStructArray(result.payload).map(node => ({
           nodeObjectPath: structString(node, 'NodeObjectPath'),
           nodeClassPath: structString(node, 'NodeClassPath'),
           nodeTitle: structString(node, 'NodeTitle'),
           nodePosX: structNumber(node, 'NodePosX'),
           nodePosY: structNumber(node, 'NodePosY'),
+          memberName: structString(node, 'MemberName'),
+          graphObjectPath: structString(node, 'GraphObjectPath'),
+          targetClassPath: structString(node, 'TargetClassPath'),
+          delegateName: structString(node, 'DelegateName'),
+          subGraphObjectPath: structString(node, 'SubGraphObjectPath'),
         }))
-        return { value: { graph, nodes, count: nodes.length, functionName: 'GetGraphNodes' }, resultSummary: `${nodes.length} nodes` }
+        return { value: { graph, nodes, count: nodes.length, recursive, functionName: 'GetGraphNodes' }, resultSummary: `${nodes.length} nodes` }
       })
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'unreal_get_node_pins',
-    description: 'List the pins of an editor graph node through the CallFunction dispatcher: name, direction, Type, default value and LinkedPinIds (pin-id graph edges, for exec-chain tracing).',
+    description:
+      'List the pins of an editor graph node through the CallFunction dispatcher: name, direction, Type text, default value, linked flag, LinkedPinIds (pin-id graph edges) plus category (exec/bool/object/struct/...), typeName (concrete struct/object Type), defaultObjectPath (object-reference default) and connections (linked pins as "NodeGuid::PinName").',
     parameters: {
       node: { type: 'string', required: true, description: 'Node object path (from unreal_get_graph_nodes).' },
     },
@@ -2337,9 +2876,11 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           pinType: structString(pin, 'PinType'),
           defaultValue: structString(pin, 'DefaultValue'),
           linked: structBool(pin, 'bLinked'),
-          linkedPinIds: Array.isArray((pin as Record<string, JsonValue>)['LinkedPinIds'])
-            ? ((pin as Record<string, JsonValue>)['LinkedPinIds'] as JsonValue[]).map(String)
-            : [],
+          category: structString(pin, 'Category'),
+          typeName: structString(pin, 'TypeName'),
+          defaultObjectPath: structString(pin, 'DefaultObjectPath'),
+          connections: payloadStringArray(pin, 'Connections'),
+          linkedPinIds: payloadStringArray(pin, 'LinkedPinIds'),
         }))
         return { value: { node, pins, count: pins.length, functionName: 'GetNodePins' }, resultSummary: `${pins.length} pins` }
       })
@@ -2375,7 +2916,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           { Graph: graph, FunctionOwnerClassPath: functionOwnerClassPath, FunctionName: functionName, NodePosX: nodePosX, NodePosY: nodePosY },
           `${functionOwnerClassPath}.${functionName}`,
         )
-        return { value: { nodeObjectPath, functionName, functionOwnerClassPath, editorKitFunction: 'AddCallFunctionNode' }, resultSummary: `node added` }
+        return { value: { nodeObjectPath, functionName, functionOwnerClassPath }, resultSummary: `node added` }
       })
     },
   }))
@@ -2843,7 +3384,85 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
     },
   }))
 
+    ctx.tools.register(defineTool({
+    name: 'unreal_get_dirty_assets',
+    description:
+      'List every loaded asset package with unsaved changes (maps and content; transient packages are skipped). Call this before closing the editor or restarting the host, show the list to the user and ask whether to save; unreal_save_dirty_assets then saves without any dialog.',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => {
+        const dirty = Array.isArray(value.dirty) ? (value.dirty as Array<Record<string, JsonValue>>) : []
+        if (dirty.length === 0) return [{ type: 'text', text: 'no dirty assets' }]
+        const lines = dirty.map(entry => {
+          const paths = Array.isArray(entry['assetPaths']) ? (entry['assetPaths'] as JsonValue[]).map(String) : []
+          const detail = paths.length === 0 ? '' : ` → ${paths.join(', ')}`
+          return `${String(entry['packageName'])}${entry['isMap'] === true ? ' (map)' : ''}${detail}`
+        })
+        return [{ type: 'text', text: `${String(value.count)} dirty packages\n${lines.join('\n')}` }]
+      },
+    },
+    async execute(_args, exec) {
+      return await audited(deps, exec, { tool: 'unreal_get_dirty_assets', params: {} }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.asset, 'GetDirtyAssets', {})
+        const dirty = payloadStructArray(result.payload).map(entry => ({
+          packageName: structString(entry, 'PackageName'),
+          assetPaths: payloadStringArray(entry, 'AssetPaths'),
+          isMap: structBool(entry, 'bIsMap'),
+        }))
+        return { value: { dirty, count: dirty.length }, resultSummary: `${dirty.length} dirty packages` }
+      })
+    },
+  }))
+
   ctx.tools.register(defineTool({
+    name: 'unreal_save_dirty_assets',
+    description:
+      'Silently save unsaved asset packages (no save dialog). Pass assets (asset or package paths) to save specific ones, or omit it to save every currently dirty package. Call this only after the user confirmed saving.',
+    parameters: {
+      assets: {
+        type: 'json',
+        description: 'Optional JSON array of asset/package paths; omit to save every dirty package.',
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [
+        {
+          type: 'text',
+          text: Array.isArray(value.remainingDirty) && value.remainingDirty.length === 0
+            ? 'dirty assets saved'
+            : `saved; still dirty: ${(value.remainingDirty as JsonValue[]).map(String).join(', ')}`,
+        },
+      ],
+    },
+    async execute(args, exec) {
+      const raw = args.assets
+      if (raw !== undefined && !Array.isArray(raw)) {
+        throw new KitError('editorautomation/invalid_argument', 'assets must be a JSON array of asset/package paths.', {
+          functionName: 'SaveAssets',
+        })
+      }
+      const requested = raw === undefined ? [] : raw.map(String)
+      return await audited(deps, exec, { tool: 'unreal_save_dirty_assets', params: { assets: requested } }, async () => {
+        await requireEditorAutomationBool(
+          deps,
+          exec.signal,
+          EDITOR_AUTOMATION_LIBRARIES.asset,
+          'SaveAssets',
+          { AssetOrPackagePaths: requested, bOnlyDirty: true },
+          requested.length === 0 ? 'the dirty assets' : requested.join(', '),
+        )
+        const after = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.asset, 'GetDirtyAssets', {})
+        const remainingDirty = payloadStructArray(after.payload).map(entry => structString(entry, 'PackageName'))
+        return {
+          value: { requested, saved: true, remainingDirty },
+          resultSummary: remainingDirty.length === 0 ? 'dirty assets saved' : `${remainingDirty.length} packages still dirty`,
+        }
+      })
+    },
+  }))
+ctx.tools.register(defineTool({
     name: 'unreal_create_widget_blueprint',
     description: 'Create a WidgetBlueprint asset at AssetPath. ParentClassPath defaults to UUserWidget.',
     parameters: {
@@ -2957,6 +3576,82 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
       })
     },
   }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg_editor') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_is_widget_variable',
+    description: 'Whether a template widget is exposed as a variable of one Widget Blueprint (its name exists on the generated class). Requires the umg_editor group.',
+    parameters: {
+      widget: { type: 'string', required: true, description: 'Template UWidget object path.' },
+      blueprint: { type: 'string', required: true, description: 'WidgetBlueprint asset object path.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: `${String(value.widget)} variable=${String(value.isVariable)}` }],
+    },
+    async execute(args, exec) {
+      const widget = requiredString(args.widget, 'widget')
+      const blueprint = requiredString(args.blueprint, 'blueprint')
+      return await audited(deps, exec, { tool: 'unreal_is_widget_variable', params: { widget, blueprint } }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'IsWidgetVariable', {
+          Widget: widget,
+          WidgetBlueprint: blueprint,
+        })
+        const isVariable = payloadBool(result.payload)
+        return { value: { widget, blueprint, isVariable }, resultSummary: `variable=${isVariable}` }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg_editor') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_get_user_widget_root',
+    description: 'Get the root widget of the UserWidget that owns one widget (walking up outers), e.g. to go from a nested child back to its user-widget root. Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UWidget UObject path.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: `root: ${String(value.rootWidget)}` }],
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      return await audited(deps, exec, { tool: 'unreal_get_user_widget_root', params: { objectPath } }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'GetUserWidgetRoot', { Widget: objectPath })
+        const rootWidget = typeof result.payload === 'string' ? result.payload : ''
+        return { value: { objectPath, rootWidget }, resultSummary: rootWidget === '' ? 'root not found' : 'root read' }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_get_widget_text_active_states',
+    description:
+      'Collect every UTextBlock inside one widget subtree with its current text and visual state: object path, text, ESlateVisibility display name, enabled and visible flags. Requires the umg group.',
+    parameters: {
+      objectPath: { type: 'string', required: true, description: 'UWidget UObject path.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => {
+        const states = Array.isArray(value.states) ? (value.states as Array<Record<string, JsonValue>>) : []
+        const lines = states.map(state => `${String(state['text'])} [${String(state['visibility'])}] enabled=${String(state['isEnabled'])} visible=${String(state['isVisible'])}`)
+        return [{ type: 'text', text: states.length === 0 ? 'no text widgets' : `${states.length} text widgets\n${lines.join('\n')}` }]
+      },
+    },
+    async execute(args, exec) {
+      const objectPath = requiredString(args.objectPath, 'objectPath')
+      return await audited(deps, exec, { tool: 'unreal_get_widget_text_active_states', params: { objectPath } }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'GetWidgetTextActiveStates', { Widget: objectPath })
+        const states = payloadStructArray(result.payload).map(state => ({
+          widgetPath: structString(state, 'WidgetPath'),
+          text: structString(state, 'Text'),
+          visibility: structString(state, 'Visibility'),
+          isEnabled: structBool(state, 'bIsEnabled'),
+          isVisible: structBool(state, 'bIsVisible'),
+        }))
+        return { value: { objectPath, states, count: states.length }, resultSummary: `${states.length} text widgets` }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg') })
 
   ctx.tools.register(defineTool({
     name: 'unreal_get_umg_widget_slot',
@@ -3159,6 +3854,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
 /** EditorAutomation library CDO paths, as addressed by Remote Control. */
 const EDITOR_AUTOMATION_LIBRARIES = {
   core: '/Script/EditorAutomation.Default__EditorAutomationCoreLibrary',
+  input: '/Script/EditorAutomation.Default__EditorAutomationInputLibrary',
   blueprint: '/Script/EditorAutomation.Default__EditorAutomationBlueprintLibrary',
   graph: '/Script/EditorAutomation.Default__EditorAutomationGraphLibrary',
   level: '/Script/EditorAutomation.Default__EditorAutomationLevelLibrary',
@@ -3272,6 +3968,48 @@ function structBool(payload: JsonValue, key: string): boolean {
 /** Read a nested-JSON array of struct objects; anything else is an empty array. */
 function payloadStructArray(payload: JsonValue): JsonValue[] {
   return Array.isArray(payload) ? payload : []
+}
+
+/** Read a nested-JSON array of strings from a struct payload member. */
+function payloadStringArray(payload: JsonValue, key: string): string[] {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return []
+  const value = (payload as Record<string, JsonValue>)[key]
+  return Array.isArray(value) ? value.map(String) : []
+}
+
+/**
+ * Build the Engine's FEditorAutomationModifierKeys object from the agnostic Ctrl/Alt/Shift/Cmd
+ * tool arguments. Absent arguments stay absent so the C++ defaults decide.
+ */
+function modifierKeysJson(args: Record<string, unknown>): Record<string, string> | undefined {
+  const keys: Record<string, string> = {}
+  const candidates: ReadonlyArray<readonly [string, string]> = [
+    ['control', 'bControl'],
+    ['alt', 'bAlt'],
+    ['shift', 'bShift'],
+    ['command', 'bCommand'],
+  ]
+  for (const [argument, field] of candidates) {
+    const value = args[argument]
+    if (typeof value === 'boolean') keys[field] = value ? 'true' : 'false'
+  }
+  return Object.keys(keys).length === 0 ? undefined : keys
+}
+
+/** Build FEditorAutomationSendClickOptions for the Input library (nested-JSON scalars are strings). */
+function clickOptionsJson(
+  button: string,
+  clickType: string,
+  relativeX: number,
+  relativeY: number,
+  modifiers: Record<string, string> | undefined,
+): Record<string, unknown> {
+  return {
+    Button: button,
+    ClickType: clickType === 'double' ? 1 : 0,
+    RelativePosition: { X: String(relativeX), Y: String(relativeY) },
+    ...(modifiers === undefined ? {} : { ModifierKeys: modifiers }),
+  }
 }
 
 /** Invoke a string-returning EditorAutomation function and raise when it reports an empty result. */

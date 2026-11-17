@@ -100,6 +100,8 @@ export interface FunctionView {
   readonly parameters: readonly ParameterView[]
   /** Canonical return Type; empty when it returns nothing. */
   readonly returnType: string
+  /** Editor tooltip of the function; empty when it has none. */
+  readonly tooltip: string
 }
 
 /** A described class. */
@@ -271,6 +273,7 @@ function mapFunctionPayload(payload: unknown): FunctionView {
       direction: parameterDirectionName(structNumber(parameter, 'Direction') ?? 0),
     })),
     returnType: structString(payload, 'ReturnType'),
+    tooltip: structString(payload, 'ToolTip'),
   }
 }
 

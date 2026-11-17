@@ -163,16 +163,21 @@ function result(overrides: Record<string, unknown>): Record<string, unknown> {
 }
 
 describe('registerTools', () => {
-  it('registers exactly the seventy-two EditorAutomation tools', () => {
+  it('registers exactly the ninety-one EditorAutomation tools', () => {
     const tools = new Map<string, ToolDef>()
     const store = new RecordingStore()
     registerTools(fakeHost(tools), makeDeps(kitFetch([{}]), store))
 
     assert.deepEqual([...tools.keys()].sort(), [...OWNED_TOOLS].sort())
-    assert.equal(tools.size, 72)
+    assert.equal(tools.size, 91)
     assert.ok(tools.has('unreal_get_editor_info'))
     assert.ok(tools.has('unreal_focus_pie'))
     assert.ok(tools.has('unreal_send_key'))
+    assert.ok(tools.has('unreal_widget_click'))
+    assert.ok(tools.has('unreal_get_list_view_info'))
+    assert.ok(tools.has('unreal_capture_widget_screenshot'))
+    assert.ok(tools.has('unreal_get_dirty_assets'))
+    assert.ok(tools.has('unreal_save_dirty_assets'))
     assert.ok(tools.has('unreal_call_functions'))
     assert.ok(tools.has('unreal_screenshot'))
     assert.ok(tools.has('unreal_get_recent_log'))

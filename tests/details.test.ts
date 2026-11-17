@@ -246,6 +246,50 @@ describe('buildCallFunctionDetails', () => {
     assert.deepEqual(point?.members?.map(member => member.name), ['X', 'Y', 'Z'])
   })
 
+  it('types the members of an array-of-struct return value', async () => {
+    const details = await buildCallFunctionDetails(deps({
+      overrides: {
+        GetFunctionInfo: () => ok({
+          Info: {
+            Name: 'GetBlueprintGraphs',
+            bBlueprintCallable: true,
+            Parameters: [],
+            ReturnType: 'array(struct(/Script/EditorAutomation.EditorAutomationBlueprintGraphInfo))',
+          },
+        }),
+        GetStructInfo: () => ok({
+          Info: {
+            Struct: '/Script/EditorAutomation.EditorAutomationBlueprintGraphInfo',
+            Properties: [
+              { Name: 'GraphName', Type: 'FString' },
+              { Name: 'GraphClassPath', Type: 'FString' },
+              { Name: 'GraphObjectPath', Type: 'FString' },
+            ],
+          },
+        }),
+      },
+    }), {
+      objectPath: '/Script/EditorAutomation.Default__EditorAutomationGraphLibrary',
+      functionName: 'GetBlueprintGraphs',
+      parametersJson: '{}',
+      result: {
+        returnValueJson: '[{"GraphName":"EventGraph","GraphClassPath":"/Script/Engine.EdGraph"}]',
+        outParametersJson: '{}',
+        returnType: 'array(struct(/Script/EditorAutomation.EditorAutomationBlueprintGraphInfo))',
+      },
+    })
+
+    const returns = details?.sections.find(section => section.kind === 'returns')
+    const field = returns?.fields?.[0]
+    assert.equal(field?.type, 'array(struct(/Script/EditorAutomation.EditorAutomationBlueprintGraphInfo))')
+    // The element struct's members ride along so each expanded [0] field can show its Type.
+    assert.deepEqual(field?.members?.map(member => [member.name, member.type]), [
+      ['GraphName', 'FString'],
+      ['GraphClassPath', 'FString'],
+      ['GraphObjectPath', 'FString'],
+    ])
+  })
+
   it('builds inputs only when the call itself failed', async () => {
     const details = await buildCallFunctionDetails(deps(), {
       objectPath: '/Script/Engine.Default__Actor',

@@ -288,6 +288,41 @@ export function innerTypeOf(type: string | undefined): { kind: string; inner: st
   return { kind: type.slice(0, open), inner: type.slice(open + 1, -1) }
 }
 
+/** Index of the first top-level comma in a Type argument list, or -1 when there is none. */
+function topLevelComma(inner: string): number {
+  let depth = 0
+  for (let index = 0; index < inner.length; index += 1) {
+    const character = inner[index]
+    if (character === '(') depth += 1
+    else if (character === ')') depth -= 1
+    else if (character === ',' && depth === 0) return index
+  }
+  return -1
+}
+
+/**
+ * The innermost struct Type inside `array(...)`, `set(...)` or `map(...)` wrappers.
+ *
+ * A container's members are the element struct's fields, which is what lets a
+ * return value like `array(struct(...))` label each expanded element's fields
+ * with their member Type in the Details tree.
+ *
+ * @param type - a canonical Type string.
+ * @returns the `struct(...)` Type, or `undefined` for a scalar or a non-struct container.
+ */
+function structElementTypeOf(type: string | undefined): string | undefined {
+  if (type === undefined) return undefined
+  const parsed = innerTypeOf(type)
+  if (parsed === undefined) return undefined
+  if (parsed.kind === 'struct') return type
+  if (parsed.kind === 'array' || parsed.kind === 'set') return structElementTypeOf(parsed.inner.trim())
+  if (parsed.kind === 'map') {
+    const split = topLevelComma(parsed.inner)
+    return split < 0 ? undefined : structElementTypeOf(parsed.inner.slice(split + 1).trim())
+  }
+  return undefined
+}
+
 /**
  * Attach one level of member types and, for enums, a display label.
  *
@@ -299,8 +334,11 @@ async function describeField(deps: DetailsDeps, field: DetailField): Promise<Det
   const parsed = innerTypeOf(field.type)
   if (parsed === undefined) return field
   try {
-    if (parsed.kind === 'struct') {
-      const struct = await deps.reflection.structInfo(field.type ?? '', deps.signal)
+    // A direct struct field and a container of structs both expose the element
+    // struct's members, so expanded rows can show their member Type too.
+    const structType = parsed.kind === 'struct' ? field.type : structElementTypeOf(field.type)
+    if (structType !== undefined) {
+      const struct = await deps.reflection.structInfo(structType, deps.signal)
       const members = struct.value.members
         .slice(0, DETAIL_LIMITS.maxMemberTypes)
         .map((member: MemberView) => ({
