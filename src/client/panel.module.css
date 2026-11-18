@@ -864,21 +864,35 @@
 /* Table header and row boards keep their normal colors: only text and lines carry
    the failure tint. */
 
-/* The value checkbox is a disabled native control, where accent-color is muted by the
-   UA style, so draw the box ourselves: red outline always, red fill plus a white check
-   when checked. */
-/* Failed card: the identical box and check geometry, tinted red. The check is nudged
-   down half a pixel to match how the red board reads against the grey one. */
-.batchCallFail .valueBool {
+/* The value checkbox: a failed card tints the shared 13px box red (pale board, darker
+   red check) while keeping the normal state's exact geometry. */
+.batchCallFail .valueBool,
+.rowFailed .valueBool {
   background-color: rgba(208, 80, 63, 0.18) !important;
 }
 
-.batchCallFail .valueBool:checked {
+.batchCallFail .valueBool:checked,
+.rowFailed .valueBool:checked {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.2 6.2l2.4 2.4 5-5.2' fill='none' stroke='%23a83a2c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
 }
 
-.batchCallFail .valueBool:indeterminate {
+.batchCallFail .valueBool:indeterminate,
+.rowFailed .valueBool:indeterminate {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.6 6h6.8' fill='none' stroke='%23a83a2c' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E") !important;
+}
+
+/* A failed history card's formatted body uses the same failure tint as a failed batch
+   sub-card: red text and lines, while every board keeps its normal colour. The raw
+   view is excluded, so raw JSON keeps its syntax colours. */
+.rowFailed [data-unreal-details-view],
+.rowFailed [data-unreal-details-view] * {
+  color: #d0503f !important;
+  border-color: rgba(208, 80, 63, 0.4) !important;
+}
+
+/* Column dividers stay a touch lighter, like the sub-card grid. */
+.rowFailed [data-unreal-details-view] .treeTable .fieldRow > span {
+  border-right-color: rgba(208, 80, 63, 0.35) !important;
 }
 .batchCallHead {
   display: flex;
@@ -921,9 +935,9 @@
   white-space: pre-wrap;
 }
 
-/* A failed nested call's error line uses the history card's error style; only the
-   horizontal padding is removed because the nested body already insets it. */
-.batchCall .cardError {
+/* An error rendered inside a card body (a batch sub-card, a failed envelope) starts at
+   the same inset as the body's tables; the outer failed-card line keeps its own 10px. */
+.cardBody .cardError {
   padding: 3px 0 0;
 }
 

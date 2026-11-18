@@ -81,6 +81,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     store,
     config: resolved,
     now: () => Date.now(),
+    reflection,
     localizeTexts: (keys, culture, signal) => translations.texts(keys, culture, signal),
     // The panel polls every 4 s; identity is cached for ~10 s so the poll is
     // not an RC round trip, while a restarted editor's new PID still appears
@@ -94,6 +95,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     store,
     config: resolved,
     now: () => Date.now(),
+    warn: line => { ctx.logger.warn(line) },
   })
 
   // Advisory liveness probe at mount: puts the answer in the host log without

@@ -26,6 +26,7 @@ import css from './panel.module.css'
 import { formatValue } from './format.ts'
 import type { MsgKey } from './locales.ts'
 import { typeLabel } from './type-label.ts'
+import { cachedMembers, ensureMembers } from './member-cache.ts'
 import { fetchScreenshot } from './wire.ts'
 import type { DetailFieldView, DetailMemberTypeView, DetailSectionView, DetailView, OperationView, RpcCaller } from './wire.ts'
 
@@ -36,6 +37,9 @@ type Tr = (key: MsgKey) => string
 export type LocalizeNames = (keys: readonly string[]) => Promise<ReadonlyMap<string, string>>
 
 const LocalizedNamesContext = createContext<LocalizeNames | undefined>(undefined)
+
+/** The channel caller, for schemas the Details tree fetches while expanding. */
+const RpcCallerContext = createContext<RpcCaller | undefined>(undefined)
 
 /** Provide localized display names to the info tables below. */
 export function LocalizedNamesProvider(props: {
@@ -428,6 +432,8 @@ function flattenTreeRows(
   fields: readonly DetailFieldView[],
   expanded: ReadonlySet<string>,
   tr: Tr,
+  resolveMembers: (type: string) => readonly DetailMemberTypeView[] | undefined,
+  missing: Set<string>,
 ): FlatTreeRow[] {
   const rows: FlatTreeRow[] = []
   const walk = (
@@ -480,18 +486,36 @@ function flattenTreeRows(
     }
     if (container !== undefined) {
       // A container of structs carries the member types resolved for its element
-      // struct, so expanding one element can label that struct's fields.
-      const elementMembers = isStructType(container.value) ? members : undefined
+      // struct, so expanding one element can label that struct's fields. When the
+      // record only carried the top-level shape, the element's schema is fetched
+      // on demand (the resolver caches it) and the effect below re-renders.
+      const elementType = container.value
+      const elementStruct = isStructType(elementType) ? elementType : undefined
+      const elementMembers = elementStruct === undefined ? undefined : (members ?? resolveMembers(elementStruct))
+      if (elementStruct !== undefined && elementMembers === undefined) missing.add(elementStruct)
       const elementLabels = new Map((elementMembers ?? []).map(member => [member.name, memberLabel(member)]))
       for (const [entryName, entryValue] of entries) {
-        walk(elementLabels.get(entryName) ?? entryName, container.value, entryValue, elementMembers, depth + 1, `${path}.${entryName}`, undefined, entryName)
+        walk(elementLabels.get(entryName) ?? entryName, elementType, entryValue, elementMembers, depth + 1, `${path}.${entryName}`, undefined, entryName)
       }
       return
     }
-    const memberTypes = new Map((members ?? []).map(member => [member.name, member.type]))
-    const memberLabels = new Map((members ?? []).map(member => [member.name, memberLabel(member)]))
+    const structType = isStructType(type) ? type : undefined
+    const structMembers = members ?? (structType === undefined ? undefined : resolveMembers(structType))
+    if (structType !== undefined && structMembers === undefined) missing.add(structType)
+    const memberTypes = new Map((structMembers ?? []).map(member => [member.name, member.type]))
+    const memberLabels = new Map((structMembers ?? []).map(member => [member.name, memberLabel(member)]))
+    const memberNested = new Map((structMembers ?? []).map(member => [member.name, member.members]))
     for (const [entryName, entryValue] of entries) {
-      walk(memberLabels.get(entryName) ?? entryName, memberTypes.get(entryName), entryValue, undefined, depth + 1, `${path}.${entryName}`, undefined, entryName)
+      walk(
+        memberLabels.get(entryName) ?? entryName,
+        memberTypes.get(entryName),
+        entryValue,
+        memberNested.get(entryName),
+        depth + 1,
+        `${path}.${entryName}`,
+        undefined,
+        entryName,
+      )
     }
   }
   for (const field of fields) {
@@ -527,8 +551,21 @@ function FlatTreeSection(props: {
 }): ReactNode {
   const { fields, tr } = props
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
+  const [, bumpRevision] = useState(0)
+  const caller = useContext(RpcCallerContext)
   const resizer = useResizableColumns(3)
-  const rows = flattenTreeRows(fields, expanded, tr)
+  const missing = new Set<string>()
+  const rows = flattenTreeRows(fields, expanded, tr, cachedMembers, missing)
+  const missingKey = [...missing].sort().join('\u0000')
+  useEffect(() => {
+    if (caller === undefined || missingKey === '') return
+    const controller = new AbortController()
+    let alive = true
+    void Promise.all(missingKey.split('\u0000').map(type => ensureMembers(caller, type, controller.signal)))
+      .then(() => { if (alive) bumpRevision(value => value + 1) })
+      .catch(() => {})
+    return () => { alive = false; controller.abort() }
+  }, [caller, missingKey, bumpRevision])
   const localize = useContext(LocalizedNamesContext)
   const keys = [...new Set(rows.flatMap(row => [row.displayNameKey ?? '', row.enumLabelKey ?? '']).filter(key => key !== ''))]
   const keySignature = keys.join('\u0000')
@@ -970,28 +1007,90 @@ function Section(props: {
  * @param props - the persisted details and the translator.
  * @returns the sections.
  */
+/** Whether a value is a plain object map. */
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** Rows for the fallback Inputs / Outputs sections. */
+function genericFields(value: unknown): DetailFieldView[] {
+  if (isRecordValue(value)) return Object.entries(value).map(([name, fieldValue]) => ({ name, value: fieldValue }))
+  if (value === undefined || value === null) return []
+  return [{ name: 'Value', value }]
+}
+
+/**
+ * The fallback Inputs / Outputs sections.
+ *
+ * Host-built Details (reflected names, Types and DisplayNameText) are authoritative and
+ * win whenever the matching section exists. Older records — and a host that has not yet
+ * been restarted onto the default-RC-details build — may carry no such section, so the
+ * card falls back to the recorded tool parameters/result instead of rendering nothing.
+ *
+ * @param sections - the record's typed Details sections.
+ * @param params - the recorded tool parameters.
+ * @param result - the recorded tool result.
+ * @returns the extra sections, inputs before and outputs after the typed ones.
+ */
+function fallbackSections(
+  sections: readonly DetailSectionView[],
+  params: unknown,
+  result: unknown,
+): { readonly inputs: DetailSectionView[]; readonly outputs: DetailSectionView[] } {
+  const kinds = new Set(sections.map(section => section.kind))
+  const inputs: DetailSectionView[] = []
+  const outputs: DetailSectionView[] = []
+  if (!kinds.has('inputs') && !kinds.has('calls')) {
+    const fields = genericFields(params)
+    if (fields.length > 0) inputs.push({ kind: 'inputs', fields })
+  }
+  const rendered = kinds.has('outputs') || kinds.has('returns') || kinds.has('screenshot') ||
+    kinds.has('calls') || kinds.has('change') || kinds.has('value') || kinds.has('type')
+  if (!rendered) {
+    const fields = genericFields(result)
+    if (fields.length > 0) outputs.push({ kind: 'outputs', fields })
+  }
+  return { inputs, outputs }
+}
+
+/**
+ * The enriched Details view of one record.
+ *
+ * @param props - the record's typed Details, its raw parameters/result for the fallback
+ *   sections, and the panel context.
+ * @returns the sections, or nothing when the record has no displayable data.
+ */
 export function DetailsView(props: {
-  readonly details: DetailView
+  readonly details?: DetailView | undefined
   readonly tr: Tr
   readonly caller?: RpcCaller | undefined
   readonly recordId?: string | undefined
   readonly tool?: string | undefined
+  readonly params?: unknown
   readonly result?: unknown
 }): ReactNode {
+  const base = props.details === undefined
+    ? []
+    : withLegacyCalls(props.details.sections, props.tool, props.result)
+  const { inputs, outputs } = fallbackSections(base, props.params, props.result)
+  const sections = [...inputs, ...base, ...outputs]
+  if (sections.length === 0) return undefined
   return (
-    <div className={css.detailsView} data-unreal-details-view>
-      {withLegacyCalls(props.details.sections, props.tool, props.result).map((section, index) => (
-        <Section
-          key={`${section.kind}-${String(index)}`}
-          section={section}
-          tr={props.tr}
-          caller={props.caller}
-          recordId={props.recordId}
-          tool={props.tool}
-          result={props.result}
-        />
-      ))}
-    </div>
+    <RpcCallerContext.Provider value={props.caller}>
+      <div className={css.detailsView} data-unreal-details-view>
+        {sections.map((section, index) => (
+          <Section
+            key={`${section.kind}-${String(index)}`}
+            section={section}
+            tr={props.tr}
+            caller={props.caller}
+            recordId={props.recordId}
+            tool={props.tool}
+            result={props.result}
+          />
+        ))}
+      </div>
+    </RpcCallerContext.Provider>
   )
 }
 

@@ -126,6 +126,17 @@ function highlightedJson(text: string): ReactNode[] {
   return nodes
 }
 
+/** Parse one nested-JSON text for a raw block; an unparsable payload keeps its text. */
+function parseRawBlock(text: string | undefined): unknown {
+  const trimmed = (text ?? '').trim()
+  if (trimmed === '') return undefined
+  try {
+    return JSON.parse(trimmed) as unknown
+  } catch {
+    return trimmed
+  }
+}
+
 /**
  * One card's raw payload view, shown while the card menu's radio item is checked.
  * It replaces the formatted body instead of stacking below it: the menu switches
@@ -157,8 +168,20 @@ export function RawDataDisclosure(props: {
   ]
   const legacy = isLegacyRecord(operation)
   const blocks: { label: string; value: unknown }[] = []
-  if (operation.params !== undefined) blocks.push({ label: tr('detail.rawParams'), value: operation.params })
-  if (operation.result !== undefined) blocks.push({ label: tr('detail.rawResult'), value: operation.result })
+  const rc = operation.rc
+  if (rc !== undefined) {
+    // The card's raw data is the primary RC call itself: request, out parameters and
+    // return value exactly as the Engine saw them.
+    blocks.push({ label: tr('detail.rawParams'), value: parseRawBlock(rc.parametersJson) })
+    const outParameters = parseRawBlock(rc.outParametersJson)
+    if (outParameters !== undefined) blocks.push({ label: tr('detail.rawOutParams'), value: outParameters })
+    const returnValue = parseRawBlock(rc.returnValueJson)
+    if (returnValue !== undefined) blocks.push({ label: tr('detail.rawResult'), value: returnValue })
+  } else {
+    // Older records (and tools that are not one RC call) keep the tool's own payloads.
+    if (operation.params !== undefined) blocks.push({ label: tr('detail.rawParams'), value: operation.params })
+    if (operation.result !== undefined) blocks.push({ label: tr('detail.rawResult'), value: operation.result })
+  }
 
   return (
     <div className={css.rawJson} data-unreal-raw>

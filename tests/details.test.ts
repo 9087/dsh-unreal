@@ -14,6 +14,7 @@ import {
   boundDetailValue,
   boundDetails,
   buildCallFunctionDetails,
+  buildDefaultCallDetails,
   buildPropertyValueDetails,
   buildPropertyWriteDetails,
 } from '../src/details.ts'
@@ -309,6 +310,59 @@ describe('buildCallFunctionDetails', () => {
     const inputs = details?.sections.find(section => section.kind === 'inputs')
     assert.match(String(inputs?.note), /not valid JSON/)
     assert.deepEqual(inputs?.fields, [])
+  })
+
+  it('builds Inputs and Outputs from a recorded RC request and the signature', async () => {
+    const details = await buildDefaultCallDetails(deps({
+      overrides: {
+        GetObjectClass: () => ok({ ClassType: 'class(/Script/EditorAutomation.EditorAutomationCoreLibrary)' }),
+        GetFunctionInfo: () => ok({
+          Info: {
+            Name: 'CaptureScreenshot',
+            bBlueprintCallable: true,
+            bStatic: true,
+            Parameters: [
+              { Name: 'FilePath', Type: 'string', Direction: 0, DisplayNameText: { NativeText: 'File Path' } },
+              {
+                Name: 'Target',
+                Type: 'enum(/Script/EditorAutomation.EEditorAutomationScreenshotTarget)',
+                Direction: 0,
+                DisplayNameText: { NativeText: 'Target' },
+              },
+              { Name: 'bShowUI', Type: 'bool', Direction: 0, DisplayNameText: { NativeText: 'Show UI' } },
+              { Name: 'OutFilePath', Type: 'string', Direction: 1, DisplayNameText: { NativeText: 'File Path' } },
+            ],
+            ReturnType: 'struct(/Script/EditorAutomation.EditorAutomationResult)',
+          },
+        }),
+      },
+    }), [{
+      objectPath: '/Script/EditorAutomation.Default__EditorAutomationCoreLibrary',
+      functionName: 'CaptureScreenshot',
+      parametersJson: '{"FilePath":"C:/x.png","Target":"1","bShowUI":"true"}',
+      outParametersJson: '{"OutFilePath":"C:/x.png"}',
+    }])
+
+    assert.deepEqual(details?.sections.map(section => section.kind), ['inputs', 'outputs'])
+    const inputs = details?.sections.find(section => section.kind === 'inputs')?.fields ?? []
+    assert.deepEqual(inputs.map(field => field.name), ['FilePath', 'Target', 'bShowUI'])
+    assert.deepEqual(inputs.map(field => field.type), [
+      'string',
+      'enum(/Script/EditorAutomation.EEditorAutomationScreenshotTarget)',
+      'bool',
+    ])
+    assert.deepEqual(inputs.map(field => field.value), ['C:/x.png', '1', 'true'])
+    assert.deepEqual(inputs.map(field => (field.displayNameText as { nativeText?: string } | undefined)?.nativeText), [
+      'File Path',
+      'Target',
+      'Show UI',
+    ])
+    const outputs = details?.sections.find(section => section.kind === 'outputs')?.fields ?? []
+    assert.deepEqual(outputs.map(field => field.name), ['OutFilePath'])
+    assert.equal(outputs[0]?.type, 'string')
+    assert.equal(outputs[0]?.direction, 'output')
+    assert.equal(outputs[0]?.value, 'C:/x.png')
+    assert.equal((outputs[0]?.displayNameText as { nativeText?: string } | undefined)?.nativeText, 'File Path')
   })
 })
 

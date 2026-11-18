@@ -46,6 +46,8 @@ export interface DetailMemberTypeView {
   readonly type?: string | undefined
   /** UE display name text for this member, when the schema reported one. */
   readonly displayNameText?: unknown
+  /** Nested members of a struct-typed member, for deeper expansion. */
+  readonly members?: readonly DetailMemberTypeView[] | undefined
 }
 
 /** One row of an enriched Details section. */
@@ -103,6 +105,22 @@ export interface DetailView {
 }
 
 /** One recorded call, as the panel renders it. */
+/** The primary Remote Control call one record wraps, as the Raw data view shows it. */
+export interface RcCallView {
+  /** Library class default object the call targeted. */
+  readonly objectPath: string
+  /** UFunction name. */
+  readonly functionName: string
+  /** The request parameters, as nested-JSON text. */
+  readonly parametersJson: string
+  /** The out parameters, as nested-JSON text. */
+  readonly outParametersJson: string
+  /** The return value, as nested-JSON text. */
+  readonly returnValueJson?: string | undefined
+  /** Canonical return Type. */
+  readonly returnType?: string | undefined
+}
+
 export interface OperationView {
   /** Stable record id. */
   readonly id: string
@@ -144,6 +162,8 @@ export interface OperationView {
   readonly resultSummary?: string | undefined
   /** Typed enrichment for the Details view; absent on old records. */
   readonly details?: DetailView | undefined
+  /** The primary RC call this record wrapped, for the Raw data view. */
+  readonly rc?: RcCallView | undefined
   /** Whether the call's reflection answer came from the schema cache. */
   readonly cached?: boolean | undefined
 }
@@ -244,16 +264,18 @@ function envelope(raw: unknown): Reply {
 }
 
 /** Attach a member-type list, keeping only entries the tree can label. */
-function narrowMembers(raw: unknown): DetailMemberTypeView[] | undefined {
+function narrowMembers(raw: unknown, depth = 3): DetailMemberTypeView[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const members: DetailMemberTypeView[] = []
   for (const entry of raw.slice(0, 64)) {
     const name = text(entry, 'name')
     if (name === undefined) continue
+    const nested = depth <= 1 ? undefined : narrowMembers(field(entry, 'members'), depth - 1)
     members.push({
       name,
       type: text(entry, 'type'),
       ...(field(entry, 'displayNameText') === undefined ? {} : { displayNameText: field(entry, 'displayNameText') }),
+      ...(nested === undefined ? {} : { members: nested }),
     })
   }
   return members.length === 0 ? undefined : members
@@ -329,6 +351,25 @@ export function narrowDetails(raw: unknown): DetailView | undefined {
   }
 }
 /** Narrow one operation; `undefined` when the row is unusable. */
+/** Narrow one primary RC call; `undefined` when absent or unusable. */
+function narrowRc(raw: unknown): RcCallView | undefined {
+  const objectPath = text(raw, 'objectPath')
+  const functionName = text(raw, 'functionName')
+  const parametersJson = text(raw, 'parametersJson')
+  const outParametersJson = text(raw, 'outParametersJson')
+  if (objectPath === undefined || functionName === undefined || parametersJson === undefined || outParametersJson === undefined) {
+    return undefined
+  }
+  return {
+    objectPath,
+    functionName,
+    parametersJson,
+    outParametersJson,
+    returnValueJson: text(raw, 'returnValueJson'),
+    returnType: text(raw, 'returnType'),
+  }
+}
+
 function narrowOperation(raw: unknown): OperationView | undefined {
   const id = text(raw, 'id')
   const time = num(raw, 'time')
@@ -356,6 +397,7 @@ function narrowOperation(raw: unknown): OperationView | undefined {
     result: field(raw, 'result'),
     resultSummary: text(raw, 'resultSummary'),
     details: narrowDetails(field(raw, 'details')),
+    rc: narrowRc(field(raw, 'rc')),
     cached: bool(raw, 'cached'),
   }
 }
@@ -516,6 +558,29 @@ export async function fetchScreenshot(
   if (!reply.ok) return undefined
   return text(reply.value, 'dataUrl')
 }
+/**
+ * Fetch one Type's member schema on demand.
+ *
+ * The Details tree calls this when the reader expands a nested struct: the record
+ * carries the top-level shape only, so deeper member Types come from the host's
+ * reflection cache instead of being packed into every record.
+ *
+ * @param caller - the host rpc caller.
+ * @param type - the canonical Type to describe (`struct(...)` or a container of one).
+ * @param signal - caller cancellation.
+ * @returns the members, or `undefined` when the Type has none / the call failed.
+ */
+export async function fetchMembers(
+  caller: RpcCaller,
+  type: string,
+  signal: AbortSignal,
+): Promise<readonly DetailMemberTypeView[] | undefined> {
+  const reply = await call(caller, 'members', { type }, signal)
+  if (!reply.ok) return undefined
+  const members = narrowMembers(field(reply.value, 'members'))
+  return members
+}
+
 export async function fetchSnapshot(
   caller: RpcCaller,
   request: SnapshotRequest,

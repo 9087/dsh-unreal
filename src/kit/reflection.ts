@@ -18,6 +18,7 @@
  */
 
 import type { EditorAutomationClient } from './client.ts'
+import { captureRcCall } from '../audit-capture.ts'
 import { KitError, isKitError } from './errors.ts'
 import { EDITOR_AUTOMATION_LIBRARIES, parameterDirectionName } from './types.ts'
 import type { CacheLookup, SchemaCache } from '../schema-cache.ts'
@@ -335,6 +336,37 @@ export class ReflectionService {
     this.cache = deps.cache
     this.log = deps.log  }
 
+  /**
+   * Invoke one RC function and record the request for the tool card's default Details.
+   *
+   * Reflection lookups made inside a tool body are the actual RC calls that tool made,
+   * so they must appear as that record's Inputs/Outputs; lookups outside a tool call
+   * (panel polling, record enrichment) record nothing.
+   *
+   * @param library - library class default object path.
+   * @param functionName - UFunction name.
+   * @param parameters - the request parameters.
+   * @param signal - caller cancellation.
+   * @returns the parsed invoke result.
+   */
+  private async invokeRecorded(
+    library: string,
+    functionName: string,
+    parameters: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<Awaited<ReturnType<EditorAutomationClient['invoke']>>> {
+    const result = await this.client.invoke(library, functionName, parameters, signal)
+    captureRcCall({
+      objectPath: library,
+      functionName,
+      parametersJson: JSON.stringify(parameters),
+      outParametersJson: result.outParametersJson,
+      returnValueJson: result.raw,
+      returnType: result.returnType,
+    })
+    return result
+  }
+
   /** Resolve display-name keys for one culture through the plugin's localization API. */
   async localizedTexts(keys: readonly string[], culture: string, signal?: AbortSignal): Promise<readonly string[]> {
     if (keys.length === 0 || culture === '') return keys.map(() => '')
@@ -370,7 +402,7 @@ export class ReflectionService {
    */
   async enumInfo(type: string, signal?: AbortSignal): Promise<CacheLookup<EnumInfoView>> {
     return await this.callThroughCache(cacheKey.enum(type), cacheKey.enum(type), async () => {
-      const invokeResult = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetEnumInfo', { Type: type }, signal)
+      const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetEnumInfo', { Type: type }, signal)
       const payload = invokeOut(invokeResult, 'GetEnumInfo', 'OutInfo')
       const enumPath = structString(payload, 'Enum')
       if (enumPath === '') emptyResult('GetEnumInfo', type)
@@ -394,7 +426,7 @@ export class ReflectionService {
    */
   async structInfo(type: string, signal?: AbortSignal): Promise<CacheLookup<StructInfoView>> {
     return await this.callThroughCache(cacheKey.struct(type), cacheKey.struct(type), async () => {
-      const invokeResult = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetStructInfo', { Type: type }, signal)
+      const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetStructInfo', { Type: type }, signal)
       const payload = invokeOut(invokeResult, 'GetStructInfo', 'OutInfo')
       const structPath = structString(payload, 'Struct')
       if (structPath === '') emptyResult('GetStructInfo', type)
@@ -414,7 +446,7 @@ export class ReflectionService {
    */
   async classInfo(type: string, signal?: AbortSignal): Promise<CacheLookup<ClassInfoView>> {
     return await this.callThroughCache(cacheKey.class(type), cacheKey.class(type), async () => {
-      const invokeResult = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetClassInfo', { Type: type }, signal)
+      const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetClassInfo', { Type: type }, signal)
       const payload = invokeOut(invokeResult, 'GetClassInfo', 'OutInfo')
       const classPath = structString(payload, 'Class')
       if (classPath === '') emptyResult('GetClassInfo', type)
@@ -439,7 +471,7 @@ export class ReflectionService {
       cacheKey.function(type, functionName),
       cacheKey.function(type, functionName),
       async () => {
-        const invokeResult = await this.client.invoke(
+        const invokeResult = await this.invokeRecorded(
           EDITOR_AUTOMATION_LIBRARIES.core,
           'GetFunctionInfo',
           { Type: type, FunctionName: functionName },
@@ -468,7 +500,7 @@ export class ReflectionService {
       cacheKey.propertyType(type, propertyPath),
       cacheKey.propertyType(type, propertyPath),
       async () => {
-        const invokeResult = await this.client.invoke(
+        const invokeResult = await this.invokeRecorded(
           EDITOR_AUTOMATION_LIBRARIES.core,
           'GetPropertyType',
           { Type: type, PropertyPath: propertyPath },
@@ -509,7 +541,7 @@ export class ReflectionService {
       cacheKey.objectClass(objectPath),
       cacheKey.objectClass(objectPath),
       async () => {
-        const invokeResult = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetObjectClass', { ObjectPath: objectPath }, signal)
+        const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetObjectClass', { ObjectPath: objectPath }, signal)
         const payload = invokeOut(invokeResult, 'GetObjectClass', 'OutClassType')
         if (typeof payload !== 'string' || payload === '') emptyResult('GetObjectClass', objectPath)
         return { classType: payload } satisfies ObjectClassView
@@ -530,7 +562,7 @@ export class ReflectionService {
    * @throws {KitError} an EditorAutomation error or a classified transport failure.
    */
   async getEditorInfo(signal?: AbortSignal): Promise<EditorInfoView> {
-    const invokeResult = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetEditorInfo', {}, signal)
+    const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetEditorInfo', {}, signal)
     const payload = invokeOut(invokeResult, 'GetEditorInfo', 'OutInfo')
     const processId = normalizeProcessId(structField(payload, 'ProcessId'))
     const engineVersion = structString(payload, 'EngineVersion')

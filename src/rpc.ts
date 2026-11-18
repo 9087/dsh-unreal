@@ -15,6 +15,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 
 import type { ResolvedConfig } from './config.ts'
+import { structTypeOf } from './details.ts'
+import type { ReflectionService } from './kit/reflection.ts'
 import type { OperationRecord, SessionGroup } from './records.ts'
 import { readScreenshotDataUrl } from './screenshots.ts'
 import type { UnrealStore } from './store.ts'
@@ -137,6 +139,12 @@ export interface HistoryChannelDeps {
   readonly editor?: EditorIdentityResolver | undefined
   /** Resolve display-name keys for the UI's current culture. */
   readonly localizeTexts?: ((keys: readonly string[], culture: string, signal: AbortSignal) => Promise<readonly string[]>) | undefined
+  /**
+   * Reflection service, for the on-demand `members` endpoint the Details tree calls
+   * when the reader expands a nested struct: schemas are fetched per Type instead of
+   * being packed (depth-limited) into every record.
+   */
+  readonly reflection?: ReflectionService | undefined
 }
 
 /** Build one channel failure. */
@@ -256,6 +264,26 @@ export function registerHistoryChannel(ctx: Context, deps: HistoryChannelDeps): 
           try {
             const cleared = await deps.store.clearSession(sessionId)
             return { ok: true, value: { cleared } }
+          } catch (error: unknown) {
+            return rpcError(error instanceof Error ? error.message : String(error))
+          }
+        }
+        case 'members': {
+          // On-demand schema for one Type: the Details tree fetches members when the
+          // reader expands a struct instead of every record carrying nested schemas.
+          const type = stringField(payload, 'type')
+          if (type === undefined) return rpcError('type is required.')
+          if (deps.reflection === undefined) return rpcError('Reflection is unavailable.')
+          const structType = structTypeOf(type)
+          if (structType === undefined) return rpcError(`Type "${type}" has no struct members.`)
+          try {
+            const info = await deps.reflection.structInfo(structType, signal)
+            const members = info.value.members.slice(0, 128).map(member => ({
+              name: member.name,
+              type: member.type,
+              ...(member.displayNameText === undefined ? {} : { displayNameText: member.displayNameText }),
+            }))
+            return { ok: true, value: { members } }
           } catch (error: unknown) {
             return rpcError(error instanceof Error ? error.message : String(error))
           }

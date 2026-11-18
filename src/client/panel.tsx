@@ -301,16 +301,15 @@ export function OperationCard(props: {
         {rawOpen ? (
           <RawDataDisclosure operation={operation} tr={tr} open />
         ) : (
-          operation.details !== undefined && (
-            <DetailsView
-              details={operation.details}
-              tr={tr}
-              caller={caller}
-              recordId={operation.id}
-              tool={operation.tool}
-              result={operation.result}
-            />
-          )
+          <DetailsView
+            details={operation.details}
+            tr={tr}
+            caller={caller}
+            recordId={operation.id}
+            tool={operation.tool}
+            params={operation.params}
+            result={operation.result}
+          />
         )}
       </div>
     </>

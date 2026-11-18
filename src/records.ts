@@ -135,6 +135,20 @@ export const operationRecordSchema = z.object({
    * before this field existed, and on calls with nothing to enrich.
    */
   details: callDetailsSchema.optional(),
+  /**
+   * The primary Remote Control call this operation wrapped: the request, out
+   * parameters and return value the card's Raw data view shows. Absent for tools
+   * whose work is not one reflected call (batch, call_function, local tools) and
+   * for records written before this field existed.
+   */
+  rc: z.object({
+    objectPath: z.string(),
+    functionName: z.string(),
+    parametersJson: z.string(),
+    outParametersJson: z.string(),
+    returnValueJson: z.string().optional(),
+    returnType: z.string().optional(),
+  }).optional(),
   /** Whether the call's reflection answer was served from the schema cache. */
   cached: z.boolean().optional(),
 })

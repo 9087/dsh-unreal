@@ -22,9 +22,10 @@
 
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 
+import type { RcCallSnapshot } from './audit-capture.ts'
+
 import type {
   FunctionView,
-  MemberView,
   ReflectionService,
 } from './kit/reflection.ts'
 import { classTypeFromObjectPath } from './kit/type-derive.ts'
@@ -37,6 +38,8 @@ export interface DetailMemberType {
   readonly type?: string | undefined
   /** UE display name text for this member, when the schema reported one. */
   readonly displayNameText?: JsonValue | undefined
+  /** Nested members of a struct-typed member (or of a container element), for deeper expansion. */
+  readonly members?: DetailMemberType[] | undefined
 }
 
 /** One row of a Details section. */
@@ -313,6 +316,10 @@ function topLevelComma(inner: string): number {
  * @param type - a canonical Type string.
  * @returns the `struct(...)` Type, or `undefined` for a scalar or a non-struct container.
  */
+export function structTypeOf(type: string | undefined): string | undefined {
+  return structElementTypeOf(type)
+}
+
 function structElementTypeOf(type: string | undefined): string | undefined {
   if (type === undefined) return undefined
   const parsed = innerTypeOf(type)
@@ -327,7 +334,25 @@ function structElementTypeOf(type: string | undefined): string | undefined {
 }
 
 /**
- * Attach one level of member types and, for enums, a display label.
+ * Describe one struct's members, recursing into struct-typed members so deeper
+ * expansion keeps its Type labels (`Info → Entries[0] → Value`).
+ *
+ * @param deps - reflection service and cancellation.
+ * @param structType - a canonical `struct(...)` Type.
+ * @param depth - how many more member levels to describe.
+ * @returns the members, bounded per level.
+ */
+async function describeMemberTypes(deps: DetailsDeps, structType: string): Promise<DetailMemberType[]> {
+  const struct = await deps.reflection.structInfo(structType, deps.signal)
+  return struct.value.members.slice(0, DETAIL_LIMITS.maxMemberTypes).map((member: { readonly name: string; readonly type: string; readonly displayNameText?: unknown }) => ({
+    name: member.name,
+    ...(member.type === '' ? {} : { type: member.type }),
+    ...(member.displayNameText === undefined ? {} : { displayNameText: member.displayNameText as unknown as JsonValue }),
+  }))
+}
+
+/**
+ * Attach member types and, for enums, a display label.
  *
  * @param deps - reflection service and cancellation.
  * @param field - the field so far.
@@ -341,14 +366,7 @@ async function describeField(deps: DetailsDeps, field: DetailField): Promise<Det
     // struct's members, so expanded rows can show their member Type too.
     const structType = parsed.kind === 'struct' ? field.type : structElementTypeOf(field.type)
     if (structType !== undefined) {
-      const struct = await deps.reflection.structInfo(structType, deps.signal)
-      const members = struct.value.members
-        .slice(0, DETAIL_LIMITS.maxMemberTypes)
-        .map((member: MemberView) => ({
-          name: member.name,
-          ...(member.type === '' ? {} : { type: member.type }),
-          ...(member.displayNameText === undefined ? {} : { displayNameText: member.displayNameText as unknown as JsonValue }),
-        }))
+      const members = await describeMemberTypes(deps, structType)
       return members.length === 0 ? field : { ...field, members }
     }
     if (parsed.kind === 'enum') {
@@ -549,6 +567,48 @@ export async function buildCallFunctionDetails(
     }
   }
 
+  if (sections.length === 0) return undefined
+  return boundDetails({ v: 1, sections }, deps.maxChars)
+}
+
+/**
+ * Build the default Details for one tool call from the Remote Control requests it made.
+ *
+ * Most tools wrap exactly one reflected function; this turns the recorded request and
+ * out parameters into the same Inputs/Outputs sections a `CallFunction` card shows —
+ * including each parameter's reflected Type and DisplayNameText — without the tool
+ * having to write a details builder of its own. A tool that made several calls has its
+ * sections merged by kind.
+ *
+ * @param deps - reflection service, budget and cancellation.
+ * @param calls - the RC requests the tool body made.
+ * @returns the details, or `undefined` when none of the calls resolved a signature.
+ */
+export async function buildDefaultCallDetails(
+  deps: DetailsDeps,
+  calls: readonly RcCallSnapshot[],
+): Promise<CallDetails | undefined> {
+  const inputs: DetailField[] = []
+  const outputs: DetailField[] = []
+  const other: DetailSection[] = []
+  for (const call of calls) {
+    const details = await buildCallFunctionDetails(deps, {
+      objectPath: call.objectPath,
+      functionName: call.functionName,
+      parametersJson: call.parametersJson,
+      result: { returnValueJson: '', outParametersJson: call.outParametersJson, returnType: '' },
+    })
+    if (details === undefined) continue
+    for (const section of details.sections) {
+      if (section.kind === 'inputs') inputs.push(...(section.fields ?? []))
+      else if (section.kind === 'outputs') outputs.push(...(section.fields ?? []))
+      else other.push(section)
+    }
+  }
+  const sections: DetailSection[] = []
+  if (inputs.length > 0) sections.push({ kind: 'inputs', fields: inputs.slice(0, DETAIL_LIMITS.maxFields) })
+  sections.push(...other)
+  if (outputs.length > 0) sections.push({ kind: 'outputs', fields: outputs.slice(0, DETAIL_LIMITS.maxFields) })
   if (sections.length === 0) return undefined
   return boundDetails({ v: 1, sections }, deps.maxChars)
 }
