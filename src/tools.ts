@@ -804,7 +804,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
     },
     async execute(_args, exec) {
       return await audited(deps, exec, { tool: 'unreal_get_editor_info', params: {} }, async () => {
-        const info = await deps.reflection.getEditorInfo(exec.signal)
+        const info = await bestEffortEditorInfo(deps, exec.signal)
         const text = editorInfoText(info)
         return {
           value: {
@@ -1300,13 +1300,6 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
             ValueJson: valueJson,
             bGenerateTransaction: transaction,
           })
-          if (!structBool(write.payload, 'bSuccess')) {
-            throw new KitError(
-              'editorautomation/SetPropertyValueFailed',
-              `SetPropertyValue reported failure for ${objectPath}.${propertyPath}.`,
-              { functionName: 'SetPropertyValue', hint: 'Call unreal_get_recent_log for the engine log reason.' },
-            )
-          }
           const oldText = structString(write.payload, 'OldValueJson')
           const newText = structString(write.payload, 'NewValueJson')
           const oldParsed = parseNestedJson(oldText, 'OldValueJson')
@@ -1499,7 +1492,9 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
         exec,
         {
           tool: 'unreal_call_functions',
-          params: { calls: calls.map(call => ({ objectPath: call.objectPath, functionName: call.functionName })) },
+          // Record the real request: each call's parametersJson belongs under Raw params,
+          // so the Raw result must not echo them a second time.
+          params: { calls },
           details: async () => batchDetails,
         },
         async () => {
@@ -1555,7 +1550,11 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
             value: {
               batchSuccess: kitResult.bSuccess !== false,
               batchErrorMessage: kitResult.ErrorMessage ?? '',
-              calls,
+              calls: calls.map(call => ({
+                objectPath: call.objectPath,
+                functionName: call.functionName,
+                generateTransaction: call.generateTransaction,
+              })),
               results,
               failed,
             },
@@ -1717,7 +1716,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           if (resolvedPath === '') {
             throw new KitError('editorautomation/CaptureScreenshotFailed', `CaptureScreenshot returned no PNG path for target ${target}.`, {
               functionName: 'CaptureScreenshot',
-              hint: 'Call unreal_get_recent_log for the engine log reason.',
+              hint: 'The result envelope carries the engine reason; read the error message.',
             })
           }
           const waitedStarted = Date.now()
@@ -2171,13 +2170,6 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           Widget: objectPath,
           MaxItems: maxItems,
         })
-        const success = structBool(result.payload, 'bSuccess')
-        if (!success) {
-          throw new KitError('editorautomation/GetListViewInfoFailed', `GetListViewInfo could not read ${objectPath}.`, {
-            functionName: 'GetListViewInfo',
-            hint: 'Call unreal_get_recent_log for the engine log reason.',
-          })
-        }
         const itemsValue = result.payload === null || typeof result.payload !== 'object' || Array.isArray(result.payload)
           ? []
           : (result.payload as Record<string, JsonValue>)['Items'] ?? []
@@ -2197,7 +2189,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
   ctx.tools.register(defineTool({
     name: 'unreal_get_list_entry_info',
     description:
-      'Read the row widget of one UListView item. List rows are virtualized: an item off screen reports success=false with no row — call unreal_scroll_to_list_entry to bring it into view first. Requires the umg group.',
+      'Read the row widget of one UListView item. List rows are virtualized: an item off screen fails with a NotReady error whose hint asks you to call unreal_scroll_to_list_entry first. Requires the umg group.',
     parameters: {
       objectPath: { type: 'string', required: true, description: 'UListView widget UObject path.' },
       index: { type: 'number', required: true, description: 'Item index.' },
@@ -2224,7 +2216,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           Widget: objectPath,
           Index: index,
         })
-        const success = structBool(result.payload, 'bSuccess')
+        const success = true
         const entry = {
           success,
           index: structNumber(result.payload, 'Index'),
@@ -2268,7 +2260,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           Widget: objectPath,
           Index: index,
         })
-        const success = structBool(result.payload, 'bSuccess')
+        const success = true
         const value = {
           objectPath,
           success,
@@ -2312,17 +2304,11 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
       const relativeX = typeof args.relativeX === 'number' ? args.relativeX : 0.5
       const relativeY = typeof args.relativeY === 'number' ? args.relativeY : 0.5
       return await audited(deps, exec, { tool: 'unreal_scroll_to_list_entry_and_click', params: { objectPath, index, button, clickType, relativeX, relativeY } }, async () => {
-        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umg, 'ScrollToListEntryAndSendClick', {
+        await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umg, 'ScrollToListEntryAndSendClick', {
           Widget: objectPath,
           Index: index,
           Options: clickOptionsJson(button, clickType, relativeX, relativeY, modifierKeysJson(args)),
         })
-        if (!payloadBool(result.payload)) {
-          throw new KitError('editorautomation/ScrollToListEntryAndSendClickFailed', `ScrollToListEntryAndSendClick did not click item ${index} of ${objectPath}.`, {
-            functionName: 'ScrollToListEntryAndSendClick',
-            hint: 'If the row was just created, call this tool again; otherwise call unreal_get_recent_log for the engine reason.',
-          })
-        }
         return { value: { objectPath, index, button, clickType }, resultSummary: `clicked item ${index}` }
       })
     },
@@ -2366,7 +2352,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           if (resolvedPath === '') {
             throw new KitError('editorautomation/CaptureWidgetScreenshotFailed', `CaptureWidgetScreenshot returned no PNG path for ${objectPath}.`, {
               functionName: 'CaptureWidgetScreenshot',
-              hint: 'Call unreal_get_recent_log for the engine log reason.',
+              hint: 'The result envelope carries the engine reason; read the error message.',
             })
           }
           let bytes = 0
@@ -2473,7 +2459,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
     description:
       'Get a Blueprint asset info through EditorAutomation\'s CallFunction dispatcher: asset path, class, parent class, EBlueprintType, EBlueprintStatus, dirty and compile state. An empty assetPath means the asset could not be loaded — call unreal_get_recent_log for the engine reason.',
     parameters: {
-      blueprint: { type: 'string', required: true, description: 'Blueprint object path.' },
+      blueprint: { type: 'string', required: true, description: 'Blueprint asset path (/Game/Dir/BP) or object path (/Game/Dir/BP.BP); generated-class _C paths also resolve.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },
@@ -2494,7 +2480,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
         if (assetPath === '') {
           throw new KitError('editorautomation/GetBlueprintInfoFailed', `GetBlueprintInfo could not load ${blueprint}.`, {
             functionName: 'GetBlueprintInfo',
-            hint: 'Call unreal_get_recent_log for the engine log reason.',
+            hint: 'The result envelope carries the engine reason; read the error message.',
           })
         }
         const value = {
@@ -2518,7 +2504,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
     name: 'unreal_get_blueprint_lua_path',
     description: 'Read the KGUI/blueprint-editor Lua path bound to one Blueprint (properties named LuaPath on the asset or its generated class). Empty means no Lua binding was found.',
     parameters: {
-      blueprint: { type: 'string', required: true, description: 'Blueprint object path.' },
+      blueprint: { type: 'string', required: true, description: 'Blueprint asset path (/Game/Dir/BP) or object path (/Game/Dir/BP.BP); generated-class _C paths also resolve.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },
@@ -2538,7 +2524,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
     name: 'unreal_set_blueprint_dirty',
     description: 'Set or clear the dirty flag of one Blueprint asset. Does not compile or save. Failures are reported as tool errors; call unreal_get_recent_log for the engine reason.',
     parameters: {
-      blueprint: { type: 'string', required: true, description: 'Blueprint object path.' },
+      blueprint: { type: 'string', required: true, description: 'Blueprint asset path (/Game/Dir/BP) or object path (/Game/Dir/BP.BP); generated-class _C paths also resolve.' },
       dirty: { type: 'boolean', required: true, description: 'true sets dirty, false clears it.' },
     },
     output: {
@@ -2564,9 +2550,9 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
 
   ctx.tools.register(defineTool({
     name: 'unreal_compile_blueprint',
-    description: 'Compile one Blueprint asset without dialogs; false means it compiled with errors (the engine reason is in the log). Call unreal_get_recent_log after a failure.',
+    description: 'Compile one Blueprint asset without dialogs. A compile with errors fails the call; the error message carries the engine reason.',
     parameters: {
-      blueprint: { type: 'string', required: true, description: 'Blueprint object path.' },
+      blueprint: { type: 'string', required: true, description: 'Blueprint asset path (/Game/Dir/BP) or object path (/Game/Dir/BP.BP); generated-class _C paths also resolve.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },
@@ -2585,7 +2571,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
     name: 'unreal_save_blueprint',
     description: 'Save one Blueprint asset without dialogs. Does not compile first. Saving fails while PIE is running, and can fail on read-only files or source-control checkout; the reason is logged by EditorAutomation.',
     parameters: {
-      blueprint: { type: 'string', required: true, description: 'Blueprint object path.' },
+      blueprint: { type: 'string', required: true, description: 'Blueprint asset path (/Game/Dir/BP) or object path (/Game/Dir/BP.BP); generated-class _C paths also resolve.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },
@@ -2634,7 +2620,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
     name: 'unreal_delete_blueprint',
     description: 'Delete one Blueprint asset without dialogs. Failures are reported as tool errors with the engine reason in the log.',
     parameters: {
-      blueprint: { type: 'string', required: true, description: 'Blueprint object path.' },
+      blueprint: { type: 'string', required: true, description: 'Blueprint asset path (/Game/Dir/BP) or object path (/Game/Dir/BP.BP); generated-class _C paths also resolve.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },
@@ -2786,7 +2772,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
     name: 'unreal_get_blueprint_graphs',
     description: 'List the editor graphs of a Blueprint asset (event graph, function graphs, …) through the CallFunction dispatcher. Pass a GraphObjectPath to unreal_get_graph_nodes / unreal_add_*_node.',
     parameters: {
-      blueprint: { type: 'string', required: true, description: 'Blueprint object path.' },
+      blueprint: { type: 'string', required: true, description: 'Blueprint asset path (/Game/Dir/BP) or object path (/Game/Dir/BP.BP); generated-class _C paths also resolve.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },
@@ -3073,7 +3059,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
     name: 'unreal_add_blueprint_variable',
     description: 'Add one Blueprint member variable. typeString uses the Type grammar primitive kinds (double, float, int32, int64, bool, string, name, byte) or array types such as int32[]. Compile the Blueprint afterwards.',
     parameters: {
-      blueprint: { type: 'string', required: true, description: 'Blueprint object path.' },
+      blueprint: { type: 'string', required: true, description: 'Blueprint asset path (/Game/Dir/BP) or object path (/Game/Dir/BP.BP); generated-class _C paths also resolve.' },
       variableName: { type: 'string', required: true, description: 'New variable name.' },
       typeString: { type: 'string', required: true, description: 'Type string, e.g. double or int32[].' },
     },
@@ -3482,7 +3468,7 @@ ctx.tools.register(defineTool({
         if (objectPath === '') {
           throw new KitError('editorautomation/CreateWidgetBlueprintFailed', 'The operation returned no object path.', {
             functionName: 'CreateWidgetBlueprint',
-            hint: 'Call unreal_get_recent_log for the engine log reason.',
+            hint: 'The result envelope carries the engine reason; read the error message.',
           })
         }
         return { value: { objectPath }, resultSummary: 'widget blueprint created' }
@@ -3512,7 +3498,7 @@ ctx.tools.register(defineTool({
         if (objectPath === '') {
           throw new KitError('editorautomation/AddRootWidgetFailed', 'The operation returned no object path.', {
             functionName: 'AddRootWidget',
-            hint: 'Call unreal_get_recent_log for the engine log reason.',
+            hint: 'The result envelope carries the engine reason; read the error message.',
           })
         }
         return { value: { objectPath }, resultSummary: 'root widget added' }
@@ -3696,7 +3682,7 @@ ctx.tools.register(defineTool({
         if (objectPath === '') {
           throw new KitError('editorautomation/AddWidgetFailed', 'The operation returned no object path.', {
             functionName: 'AddWidget',
-            hint: 'Call unreal_get_recent_log for the engine log reason.',
+            hint: 'The result envelope carries the engine reason; read the error message.',
           })
         }
         return { value: { objectPath }, resultSummary: 'widget added' }
@@ -3717,13 +3703,7 @@ ctx.tools.register(defineTool({
     async execute(args, exec) {
       const widget = requiredString(args.widget, 'widget')
       return await audited(deps, exec, { tool: 'unreal_remove_umg_widget', params: { widget: widget } }, async () => {
-        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'RemoveWidget', { Widget: widget })
-        if (!payloadBool(result.payload)) {
-          throw new KitError('editorautomation/RemoveWidgetFailed', 'The operation reported failure.', {
-            functionName: 'RemoveWidget',
-            hint: 'Call unreal_get_recent_log for the engine log reason.',
-          })
-        }
+        await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'RemoveWidget', { Widget: widget })
         return { value: { success: true }, resultSummary: 'widget removed' }
       })
     },
@@ -3749,7 +3729,7 @@ ctx.tools.register(defineTool({
         if (objectPath === '') {
           throw new KitError('editorautomation/RenameWidgetFailed', 'The operation returned no object path.', {
             functionName: 'RenameWidget',
-            hint: 'Call unreal_get_recent_log for the engine log reason.',
+            hint: 'The result envelope carries the engine reason; read the error message.',
           })
         }
         return { value: { objectPath }, resultSummary: 'widget renamed' }
@@ -3774,13 +3754,7 @@ ctx.tools.register(defineTool({
       const newParent = requiredString(args.newParent, 'newParent')
       const childIndex = typeof args.childIndex === 'number' ? args.childIndex : -1
       return await audited(deps, exec, { tool: 'unreal_reparent_umg_widget', params: { widget: widget, newParent: newParent, childIndex: childIndex } }, async () => {
-        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'ReparentWidget', { Widget: widget, NewParent: newParent, ChildIndex: childIndex })
-        if (!payloadBool(result.payload)) {
-          throw new KitError('editorautomation/ReparentWidgetFailed', 'The operation reported failure.', {
-            functionName: 'ReparentWidget',
-            hint: 'Call unreal_get_recent_log for the engine log reason.',
-          })
-        }
+        await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'ReparentWidget', { Widget: widget, NewParent: newParent, ChildIndex: childIndex })
         return { value: { success: true }, resultSummary: 'widget reparented' }
       })
     },
@@ -3803,13 +3777,7 @@ ctx.tools.register(defineTool({
       const propertyPath = requiredString(args.propertyPath, 'propertyPath')
       const valueJson = requiredString(args.valueJson, 'valueJson')
       return await audited(deps, exec, { tool: 'unreal_set_umg_widget_property', params: { widget: widget, propertyPath: propertyPath, valueJson: valueJson } }, async () => {
-        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'SetWidgetProperty', { Widget: widget, PropertyPath: propertyPath, ValueJson: valueJson })
-        if (!payloadBool(result.payload)) {
-          throw new KitError('editorautomation/SetWidgetPropertyFailed', 'The operation reported failure.', {
-            functionName: 'SetWidgetProperty',
-            hint: 'Call unreal_get_recent_log for the engine log reason.',
-          })
-        }
+        await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'SetWidgetProperty', { Widget: widget, PropertyPath: propertyPath, ValueJson: valueJson })
         return { value: { success: true }, resultSummary: 'widget property set' }
       })
     },
@@ -3832,13 +3800,7 @@ ctx.tools.register(defineTool({
       const propertyPath = requiredString(args.propertyPath, 'propertyPath')
       const valueJson = requiredString(args.valueJson, 'valueJson')
       return await audited(deps, exec, { tool: 'unreal_set_umg_widget_slot_property', params: { slot: slot, propertyPath: propertyPath, valueJson: valueJson } }, async () => {
-        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'SetWidgetSlotProperty', { Slot: slot, PropertyPath: propertyPath, ValueJson: valueJson })
-        if (!payloadBool(result.payload)) {
-          throw new KitError('editorautomation/SetWidgetSlotPropertyFailed', 'The operation reported failure.', {
-            functionName: 'SetWidgetSlotProperty',
-            hint: 'Call unreal_get_recent_log for the engine log reason.',
-          })
-        }
+        await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'SetWidgetSlotProperty', { Slot: slot, PropertyPath: propertyPath, ValueJson: valueJson })
         return { value: { success: true }, resultSummary: 'widget slot property set' }
       })
     },
@@ -3864,12 +3826,24 @@ const EDITOR_AUTOMATION_LIBRARIES = {
 } as const
 
 /** Nested-JSON payload of one EditorAutomation call plus its raw text and Type. */
+interface EditorAutomationEnvelope {
+  readonly success: boolean
+  readonly errorCode: number
+  readonly errorMessage: string
+  readonly hint: string
+}
+
 interface EditorAutomationCallResult {
-  /** Parsed ReturnValueJson; null when the function returns nothing. */
+  /** Unwrapped data: the operation's single out-parameter value (null when it has no data output). */
   readonly payload: JsonValue
   readonly returnValueJson: string
   readonly returnType: string
   readonly returnedNothing: boolean
+  /** Parsed result envelope, when the called function returns one. */
+  readonly envelope: EditorAutomationEnvelope | undefined
+  /** Parsed OutParametersJson object: the data outputs. */
+  readonly outParameters: JsonValue
+  readonly outParametersJson: string
 }
 
 /**
@@ -3906,13 +3880,53 @@ async function invokeEditorAutomation(
   )
   const kitResult = assertKitResult<KitCallFunctionResult>('CallFunction', returned)
   const returnValueJson = kitResult.ReturnValueJson ?? ''
-  const payload = parseNestedJson(returnValueJson, `CallFunction(${functionName}).ReturnValueJson`).value
+  const outParametersJson = kitResult.OutParametersJson ?? '{}'
+  const rawPayload = parseNestedJson(returnValueJson, `CallFunction(${functionName}).ReturnValueJson`).value
+  const outParameters = parseNestedJson(outParametersJson, `CallFunction(${functionName}).OutParametersJson`).value
+  const envelope = asAutomationEnvelope(rawPayload)
+  if (envelope !== undefined && !envelope.success) {
+    throw new KitError(
+      `editorautomation/${functionName}Failed`,
+      envelope.errorMessage === '' ? `${functionName} failed (input error ${envelope.errorCode}).` : envelope.errorMessage,
+      {
+        functionName,
+        ...(envelope.hint === '' ? {} : { hint: envelope.hint }),
+        detail: JSON.stringify({ ErrorCode: envelope.errorCode, ErrorMessage: envelope.errorMessage, Hint: envelope.hint }),
+      },
+    )
+  }
+  const payload = envelope !== undefined ? singleOutParameter(outParameters) : rawPayload
   return {
     payload,
     returnValueJson,
     returnType: kitResult.ReturnType ?? '',
     returnedNothing: returnValueJson.trim() === '',
+    envelope,
+    outParameters,
+    outParametersJson,
   }
+}
+
+/** Read an FEditorAutomationResult envelope out of one nested-JSON payload. */
+function asAutomationEnvelope(payload: JsonValue): EditorAutomationEnvelope | undefined {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return undefined
+  const record = payload as Record<string, JsonValue>
+  const successValue = record['bSuccess']
+  if (successValue !== true && successValue !== 'true' && successValue !== false && successValue !== 'false') return undefined
+  return {
+    success: successValue === true || successValue === 'true',
+    errorCode: structNumber(payload, 'ErrorCode'),
+    errorMessage: structString(payload, 'ErrorMessage'),
+    hint: structString(payload, 'Hint'),
+  }
+}
+
+/** The data payload of one operation: its single out-parameter value. */
+function singleOutParameter(outParameters: JsonValue): JsonValue {
+  if (outParameters === null || typeof outParameters !== 'object' || Array.isArray(outParameters)) return outParameters
+  const record = outParameters as Record<string, JsonValue>
+  const keys = Object.keys(record)
+  return keys.length === 1 ? record[keys[0] as string] ?? null : outParameters
 }
 
 /**
@@ -3927,15 +3941,10 @@ async function requireEditorAutomationBool(
   library: string,
   functionName: string,
   parameters: Record<string, unknown>,
-  subject: string,
+  _subject: string,
 ): Promise<void> {
-  const result = await invokeEditorAutomation(deps, signal, library, functionName, parameters)
-  if (!payloadBool(result.payload)) {
-    throw new KitError(`editorautomation/${functionName}Failed`, `${functionName} reported failure for ${subject}.`, {
-      functionName,
-      hint: 'Call unreal_get_recent_log for the engine log reason.',
-    })
-  }
+  // invokeEditorAutomation reads the result envelope and throws on failure already.
+  await invokeEditorAutomation(deps, signal, library, functionName, parameters)
 }
 
 /** Whether a nested-JSON boolean payload means true (scalars arrive as strings). */
@@ -4026,7 +4035,7 @@ async function requireEditorAutomationString(
   if (value === '') {
     throw new KitError(`editorautomation/${functionName}Failed`, `${functionName} returned no result for ${subject}.`, {
       functionName,
-      hint: 'Call unreal_get_recent_log for the engine log reason.',
+      hint: 'The call succeeded but produced no value; check the engine log for the engine reason.',
     })
   }
   return value

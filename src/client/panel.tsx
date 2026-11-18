@@ -247,10 +247,10 @@ function CardMenu(props: {
 /**
  * One recorded call as a single always-expanded card.
  *
- * The card leads with the action ("Read Cube_1.RelativeLocation"), shows the
- * call's structured body immediately, and keeps everything else — time, status,
- * call id, counts, canonical Types, legacy note, raw JSON, error code/hint —
- * behind its one Raw data menu.
+ * The card leads with the action ("Read Cube_1.RelativeLocation") and shows the
+ * call's structured body immediately. Its one Raw data menu item is a view switch:
+ * checked, it replaces every formatted section in the body (tables, sub-cards and
+ * the error line) with the raw params/result JSON.
  *
  * Reused by the transcript tool view (`toolview.tsx`), which is why the root tag
  * is selectable: the sidebar wants an `li` inside its list, the transcript wants
@@ -292,21 +292,26 @@ export function OperationCard(props: {
         )}
         <CardMenu rawOpen={rawOpen} onToggleRaw={() => { setRawOpen(value => !value) }} tr={tr} />
       </div>
-      {!operation.ok && failure !== undefined && (
+      {!rawOpen && !operation.ok && failure !== undefined && (
         <div className={css.cardError} data-unreal-error-line>{failure}</div>
       )}
-      <div className={css.cardBody} data-unreal-card-body>
-        {operation.details !== undefined && (
-          <DetailsView
-            details={operation.details}
-            tr={tr}
-            caller={caller}
-            recordId={operation.id}
-            tool={operation.tool}
-            result={operation.result}
-          />
+      <div className={css.cardBody} data-unreal-card-body data-unreal-raw-mode={rawOpen ? 'true' : undefined}>
+        {/* Raw data is a view mode, not an extra block: selecting it replaces every
+            formatted section (tables, sub-cards, error line) with the raw payloads. */}
+        {rawOpen ? (
+          <RawDataDisclosure operation={operation} tr={tr} open />
+        ) : (
+          operation.details !== undefined && (
+            <DetailsView
+              details={operation.details}
+              tr={tr}
+              caller={caller}
+              recordId={operation.id}
+              tool={operation.tool}
+              result={operation.result}
+            />
+          )
         )}
-        <RawDataDisclosure operation={operation} tr={tr} open={rawOpen} />
       </div>
     </>
   )

@@ -93,12 +93,46 @@ function MetaLine(props: { readonly label: string; readonly value: string }): Re
 }
 
 /**
- * One card's raw payload block, shown only while the card menu's radio item is
- * checked. There is no disclosure header of its own: the menu is the only
- * control, so nothing (not even a divider) is drawn while it is closed.
+ * Render one JSON text with lightweight syntax colours.
+ *
+ * The payload is already bounded by `formatJson`, so a regex tokenizer is enough:
+ * strings (keys split from values), numbers, true/false/null and punctuation.
+ *
+ * @param text - pretty-printed JSON text.
+ * @returns highlighted nodes.
+ */
+function highlightedJson(text: string): ReactNode[] {
+  const nodes: ReactNode[] = []
+  const token = /("(?:[^"\\]|\\.)*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([{}[\],:])/g
+  let last = 0
+  let key = 0
+  for (let match = token.exec(text); match !== null; match = token.exec(text)) {
+    const index = match.index
+    if (index > last) nodes.push(text.slice(last, index))
+    const [whole, quoted, colon, literal, number, punct] = match
+    if (quoted !== undefined) {
+      nodes.push(<span key={key++} className={colon === undefined ? css.jsonString : css.jsonKey}>{quoted}</span>)
+      if (colon !== undefined) nodes.push(colon)
+    } else if (literal !== undefined) {
+      nodes.push(<span key={key++} className={css.jsonLiteral}>{literal}</span>)
+    } else if (number !== undefined) {
+      nodes.push(<span key={key++} className={css.jsonNumber}>{number}</span>)
+    } else if (punct !== undefined) {
+      nodes.push(<span key={key++} className={css.jsonPunct}>{punct}</span>)
+    }
+    last = index + whole.length
+  }
+  if (last < text.length) nodes.push(text.slice(last))
+  return nodes
+}
+
+/**
+ * One card's raw payload view, shown while the card menu's radio item is checked.
+ * It replaces the formatted body instead of stacking below it: the menu switches
+ * the card between the readable view and the wire view.
  *
  * @param props - the record, the current time, the translator and the open state.
- * @returns the block, or nothing when closed.
+ * @returns the view, or nothing when closed.
  */
 export function RawDataDisclosure(props: {
   readonly operation: OperationView
@@ -141,7 +175,7 @@ export function RawDataDisclosure(props: {
         {blocks.map(block => (
           <div className={css.rawBlock} key={block.label}>
             <div className={css.detailLabel}>{block.label}</div>
-            <pre className={css.payload} data-unreal-raw-block>{formatJson(block.value, 4000)}</pre>
+            <pre className={css.payload} data-unreal-raw-block>{highlightedJson(formatJson(block.value, 4000))}</pre>
           </div>
         ))}
       </div>

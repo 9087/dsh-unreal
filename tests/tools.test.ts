@@ -381,13 +381,17 @@ describe('tool calls and their history rows', () => {
   })
 
   it('maps an engine ErrorCode to editorautomation/<name> and records the failure', async () => {
-    mount([result({ ErrorCode: 3, ErrorMessage: 'No enum named that.', Hint: 'Pass enum(/Script/...).' })])
+    mount([result({
+      ReturnValueJson: JSON.stringify({ bSuccess: 'false', ErrorCode: '3', ErrorMessage: 'No enum named that.', Hint: 'Pass enum(/Script/...).' }),
+      OutParametersJson: '{}',
+      ReturnType: 'struct(/Script/EditorAutomation.EditorAutomationResult)',
+    })])
 
     const error = await rejection(invoke('unreal_get_enum_info', { type: 'enum(/Script/Bogus)' }))
 
     assert.equal(error.code, 'editorautomation/GetEnumInfoFailed')
-    assert.match(error.message, /returned nothing for enum\(/)
-    assert.match(error.message, /Hint: Call unreal_get_recent_log/)
+    assert.match(error.message, /No enum named that\./)
+    assert.match(error.message, /Hint: Pass enum\(\/Script/)
     const row = store.records[0]!
     assert.equal(row.ok, false)
     assert.equal(row.errorCode, 'editorautomation/GetEnumInfoFailed')
@@ -686,7 +690,7 @@ describe('tool calls and their history rows', () => {
     }) as {
       results: Array<{ ok: boolean; returnValue: unknown; errorCode: number; errorMessage: string }>
       failed: number
-      calls: Array<{ parametersJson: string }>
+      calls: Array<{ objectPath: string; functionName: string }>
     }
 
     assert.equal(
@@ -699,6 +703,12 @@ describe('tool calls and their history rows', () => {
     assert.equal(value.results[1]!.ok, false)
     assert.equal(value.results[1]!.errorCode, 3)
     assert.equal(value.failed, 1)
+    // The request's parameters are recorded under Raw params, not echoed in Raw result.
+    assert.equal(value.calls.length, 2)
+    assert.equal(value.calls[1]!.functionName, 'GetEditorInfo')
+    assert.equal('parametersJson' in (value.calls[1] as Record<string, unknown>), false)
+    const recordedParams = store.records[0]!.params as { calls: Array<{ parametersJson: string }> }
+    assert.equal(recordedParams.calls[1]!.parametersJson, '{"Foo":"1"}')
     assert.equal(store.records[0]!.ok, true)
   })
 
@@ -786,7 +796,11 @@ describe('tool calls and their history rows', () => {
   })
 
   it('unreal_save_blueprint routes through CallFunction and raises the logged failure', async () => {
-    mount([result({ ReturnValueJson: '"false"', OutParametersJson: '{}', ReturnType: 'bool' })])
+    mount([result({
+      ReturnValueJson: JSON.stringify({ bSuccess: 'false', ErrorCode: '7', ErrorMessage: 'SaveBlueprint: WBP_Test could not be saved.', Hint: 'Check the log.' }),
+      OutParametersJson: '{}',
+      ReturnType: 'struct(/Script/EditorAutomation.EditorAutomationResult)',
+    })])
 
     const error = await rejection(invoke('unreal_save_blueprint', { blueprint: '/Game/UI/WBP_Test.WBP_Test' }))
 
@@ -878,7 +892,11 @@ describe('tool calls and their history rows', () => {
   })
 
   it('unreal_connect_pins raises the logged failure when the schema rejects the link', async () => {
-    mount([result({ ReturnValueJson: '"false"', OutParametersJson: '{}', ReturnType: 'bool' })])
+    mount([result({
+      ReturnValueJson: JSON.stringify({ bSuccess: 'false', ErrorCode: '7', ErrorMessage: 'ConnectPins reported failure.', Hint: 'Check the log.' }),
+      OutParametersJson: '{}',
+      ReturnType: 'struct(/Script/EditorAutomation.EditorAutomationResult)',
+    })])
 
     const error = await rejection(invoke('unreal_connect_pins', {
       fromNode: '/Game/N_From',

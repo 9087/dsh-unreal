@@ -205,9 +205,24 @@ function ScalarValue(props: {
   readonly type?: string | undefined
   readonly enumLabel?: string | undefined
   readonly omitted?: boolean | undefined
+  readonly tr?: Tr | undefined
 }): ReactNode {
   if (isEnumType(props.type)) {
-    return <span className={css.valueEnum}>{props.enumLabel ?? '—'}</span>
+    // An enum cell shows the resolved enum label; when the value has no matching entry
+    // (a rejected string such as "editor", or an uncached numeric value) show the value
+    // itself, and say so when the value is not a legal enum kind at all.
+    const invalid = typeof props.value === 'string' && !/^-?\d+$/.test(props.value)
+    const fallback = props.value === undefined || props.value === null
+      ? '—'
+      : typeof props.value === 'string'
+        ? props.value
+        : String(props.value)
+    return (
+      <span className={css.valueEnum}>
+        {props.enumLabel ?? fallback}
+        {invalid && <span className={css.valueInvalid}> ({props.tr?.('detail.invalidEnum') ?? 'not a valid value'})</span>}
+      </span>
+    )
   }
   const bool = typeof props.value === 'boolean'
     ? props.value
@@ -220,10 +235,10 @@ function ScalarValue(props: {
         type="checkbox"
         className={css.valueBool}
         checked={false}
-        disabled
         readOnly
         tabIndex={-1}
         aria-readonly="true"
+        aria-disabled="true"
         title="Omitted; the Engine default applies"
         ref={element => { if (element !== null) element.indeterminate = true }}
       />
@@ -235,10 +250,10 @@ function ScalarValue(props: {
         type="checkbox"
         className={css.valueBool}
         checked={bool}
-        disabled
         readOnly
         tabIndex={-1}
         aria-readonly="true"
+        aria-disabled="true"
       />
     )
   }
@@ -274,7 +289,20 @@ function textRefNative(value: unknown): string | undefined {
 
 function fieldDisplayName(field: DetailFieldView, tr: Tr): string {
   if (field.direction === 'return' && field.name === 'ReturnValue') return tr('detail.defaultReturn')
-  return textRefNative(field.displayNameText) ?? field.name
+  const native = textRefNative(field.displayNameText)
+  if (native !== undefined) {
+    // The Engine's display name keeps the C++ Out prefix when no UPARAM(DisplayName)
+    // is set; hide only that prefix for rendered output rows (Raw data keeps the key).
+    if (field.direction !== 'input') {
+      const stripped = native.replace(/^Out\s+/i, '').trim()
+      if (stripped !== '') return stripped
+    }
+    return native
+  }
+  // Out parameter names are C++ identifiers, not FText; render the readable form
+  // (OutDirtyAssets → Dirty Assets) while the field's name stays the exact key.
+  if (field.direction !== 'input' && field.name.startsWith('Out') && field.name.length > 3) return outParameterLabel(field.name)
+  return field.name
 }
 
 /** One container Type split into its kind and element/key-value parts. */
@@ -305,6 +333,71 @@ function containerInfo(type: string | undefined): { kind: 'array' | 'set' | 'map
 /** Whether a Type string names a struct (the only container element whose members are kept). */
 function isStructType(type: string | undefined): boolean {
   return type !== undefined && type.trim().startsWith('struct(')
+}
+
+/** Rendered label for one struct member: the Engine's display text, else the member name. */
+function memberLabel(member: DetailMemberTypeView): string {
+  const native = textRefNative(member.displayNameText)
+  return native === undefined || native === '' ? member.name : native
+}
+
+/** One failed result-envelope return, as the card shows it. */
+interface EnvelopeFailureView {
+  readonly code: number
+  readonly message: string
+  readonly hint: string
+}
+
+/**
+ * Recognise an FEditorAutomationResult returned as the call's return value.
+ *
+ * Every library call returns an envelope, but its success/failure is already reported
+ * through the call's status and Out parameters; showing the envelope as a Return Value
+ * table is noise. A failed envelope instead renders its Error Message (falling back to
+ * the numeric code) with the Hint on the next line.
+ *
+ * @param fields - the returns section fields.
+ * @returns null for a successful envelope (render nothing), the failure view for a
+ *   failed envelope, or undefined when the return value is not an envelope at all.
+ */
+function envelopeFailure(fields: readonly DetailFieldView[]): EnvelopeFailureView | null | undefined {
+  if (fields.length !== 1) return undefined
+  const value = fields[0]!.value
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (!('ErrorCode' in record) || !('bSuccess' in record)) return undefined
+  const rawCode = record['ErrorCode']
+  const code = Number(typeof rawCode === 'string' ? rawCode : String(rawCode ?? '0'))
+  const success = record['bSuccess'] === true || record['bSuccess'] === 'true'
+  if (success && (Number.isNaN(code) || code === 0)) return null
+  const message = typeof record['ErrorMessage'] === 'string' ? record['ErrorMessage'].trim() : ''
+  const hint = typeof record['Hint'] === 'string' ? record['Hint'].trim() : ''
+  return { code: Number.isNaN(code) ? 0 : code, message, hint }
+}
+
+/**
+ * The rows a Return Value table shows.
+ *
+ * A struct return is one value, but its members are the useful rows: render them from
+ * the members the Details already carry, without a wrapper row to expand. Primitive
+ * and array returns keep their single `ReturnValue` row, having no sub-properties.
+ *
+ * @param fields - the returns section's fields.
+ * @returns the rows to render.
+ */
+function returnValueFields(fields: readonly DetailFieldView[]): readonly DetailFieldView[] {
+  if (fields.length !== 1) return fields
+  const field = fields[0]!
+  const members = field.members ?? []
+  const value = field.value
+  if (members.length === 0 || value === null || typeof value !== 'object' || Array.isArray(value)) return fields
+  const record = value as Record<string, unknown>
+  return members.slice(0, 64).map(member => ({
+    name: member.name,
+    ...(member.type === undefined || member.type === '' ? {} : { type: member.type }),
+    ...(member.displayNameText === undefined ? {} : { displayNameText: member.displayNameText }),
+    ...(Object.prototype.hasOwnProperty.call(record, member.name) ? { value: record[member.name] } : {}),
+  }))
 }
 
 /** One visible row of the flattened tree table. */
@@ -389,14 +482,16 @@ function flattenTreeRows(
       // A container of structs carries the member types resolved for its element
       // struct, so expanding one element can label that struct's fields.
       const elementMembers = isStructType(container.value) ? members : undefined
+      const elementLabels = new Map((elementMembers ?? []).map(member => [member.name, memberLabel(member)]))
       for (const [entryName, entryValue] of entries) {
-        walk(entryName, container.value, entryValue, elementMembers, depth + 1, `${path}.${entryName}`, undefined, entryName)
+        walk(elementLabels.get(entryName) ?? entryName, container.value, entryValue, elementMembers, depth + 1, `${path}.${entryName}`, undefined, entryName)
       }
       return
     }
     const memberTypes = new Map((members ?? []).map(member => [member.name, member.type]))
+    const memberLabels = new Map((members ?? []).map(member => [member.name, memberLabel(member)]))
     for (const [entryName, entryValue] of entries) {
-      walk(entryName, memberTypes.get(entryName), entryValue, undefined, depth + 1, `${path}.${entryName}`, undefined, entryName)
+      walk(memberLabels.get(entryName) ?? entryName, memberTypes.get(entryName), entryValue, undefined, depth + 1, `${path}.${entryName}`, undefined, entryName)
     }
   }
   for (const field of fields) {
@@ -513,7 +608,7 @@ function FlatTreeSection(props: {
                 {row.type === undefined ? '' : typeLabel(row.type) ?? row.type}
               </span>
               <span className={css.treeValue}>
-                {isCompoundValue(row.value) ? '' : <ScalarValue value={row.value} type={row.type} enumLabel={enumLabel} omitted={row.omitted} />}
+                {isCompoundValue(row.value) ? '' : <ScalarValue value={row.value} type={row.type} enumLabel={enumLabel} omitted={row.omitted} tr={tr} />}
               </span>
             </div>
           )
@@ -696,6 +791,24 @@ function callObjectFields(text: string): DetailFieldView[] {
 }
 
 /**
+ * Readable label for one out parameter: drop the C++ `Out` prefix and split the
+ * CamelCase identifier (`OutDirtyAssets` → `Dirty Assets`). The row's key stays the
+ * exact identifier, so Raw data and future lookups are unaffected.
+ *
+ * @param name - the reflected parameter name.
+ * @returns the rendered label.
+ */
+function outParameterLabel(name: string): string {
+  const base = name.startsWith('Out') && name.length > 3 ? name.slice(3) : name
+  return base
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
  * One batch call's nested card: a history-card header and body (Parameters /
  * Returns / Out) per sub-call, without a timestamp or Raw data disclosure.
  */
@@ -735,8 +848,7 @@ function BatchCallsSection(props: { readonly fields: readonly DetailFieldView[];
         return (
           <div key={field.name} className={ok ? css.batchCall : `${css.batchCall} ${css.batchCallFail}`} data-unreal-batch-call>
             <div className={css.batchCallHead}>
-              <span className={css.batchCallTitle} title={objectPath}>{title}</span>
-              <span className={css.batchCallStatus}>{ok ? tr('row.ok') : tr('row.failed')}</span>
+              <span className={ok ? css.batchCallTitle : `${css.batchCallTitle} ${css.cardTitleFail}`} title={objectPath}>{title}</span>
             </div>
             <div className={css.cardBody}>
               {innerSections.length > 0 ? (
@@ -759,7 +871,7 @@ function BatchCallsSection(props: { readonly fields: readonly DetailFieldView[];
                   ) : (
                     <div className={css.detailSection}>
                       <div className={css.sectionTitle}>{tr('error.title')}</div>
-                      <div className={css.fieldNote}>{error === '' ? tr('row.failed') : error}</div>
+                      <div className={css.cardError}>{error === '' ? tr('row.failed') : error}</div>
                     </div>
                   )}
                   {outFields.length > 0 && (
@@ -769,6 +881,9 @@ function BatchCallsSection(props: { readonly fields: readonly DetailFieldView[];
                     </div>
                   )}
                 </>
+              )}
+              {!ok && innerSections.length > 0 && (
+                <div className={css.cardError}>{error === '' ? tr('row.failed') : error}</div>
               )}
             </div>
           </div>
@@ -787,6 +902,22 @@ function Section(props: {
 }): ReactNode {
   const { section, tr, recordId, caller, tool, result } = props
   const fields = section.fields ?? []
+  if (section.kind === 'returns') {
+    const envelope = envelopeFailure(fields)
+    if (envelope === null) return null
+    if (envelope !== undefined) {
+      const message = envelope.message !== ''
+        ? envelope.message
+        : tr('detail.errorCodeFallback').replace('{code}', String(envelope.code))
+      return (
+        <div className={css.detailSection} data-unreal-section="returns">
+          <div className={css.cardError}>{message}</div>
+          {envelope.hint !== '' && <div className={css.cardError}>{envelope.hint}</div>}
+        </div>
+      )
+    }
+  }
+  const shownFields = section.kind === 'returns' ? returnValueFields(fields) : fields
   if (section.kind === 'screenshot') {
     return (
       <div className={css.detailSection} data-unreal-section="screenshot">
@@ -826,7 +957,7 @@ function Section(props: {
           )}
         </div>
       ) : (
-        <FlatTreeSection fields={fields} tr={tr} />
+        <FlatTreeSection fields={shownFields} tr={tr} />
       )}
       {section.note !== undefined && <div className={css.fieldNote}>{section.note}</div>}
     </div>
@@ -1122,7 +1253,7 @@ function infoTable(operation: OperationView, tr: Tr): InfoTableData | undefined 
         if (value === undefined || value === null || value === '') return
         rows.push([
           { text: label, className: css.fieldNameText },
-          { text: <ScalarValue value={value} type={type} />, className: css.fieldValue },
+          { text: <ScalarValue value={value} type={type} tr={tr} />, className: css.fieldValue },
         ])
       }
       const processId = result['processId']

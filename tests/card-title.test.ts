@@ -67,33 +67,33 @@ describe('actionTitle (English)', () => {
   const tr = translator('en')
 
   it('is action-first for every tool', () => {
-    assert.equal(actionTitle(operation({ tool: 'unreal_ping' }), tr), 'Check connectivity')
+    assert.equal(actionTitle(operation({ tool: 'unreal_ping' }), tr), 'Check Connectivity')
     assert.equal(
       actionTitle(operation({
         tool: 'unreal_get_enum_info',
         targetType: 'enum(/Script/Engine.ECollisionEnabled)',
       }), tr),
-      'Get ECollisionEnabled enum info',
+      'Get ECollisionEnabled Enum Info',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_struct_info', targetType: 'struct(/Script/CoreUObject.Vector)' }), tr),
-      'Get Vector struct info',
+      'Get Vector Struct Info',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_class_info', targetType: 'class(/Script/Engine.StaticMeshComponent)' }), tr),
-      'Get StaticMeshComponent class info',
+      'Get StaticMeshComponent Class Info',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_function_info', targetType: 'class(/Script/Engine.StaticMeshComponent)', functionName: 'GetClosestPointOnCollision' }), tr),
-      'Get StaticMeshComponent.GetClosestPointOnCollision function info',
+      'Get StaticMeshComponent.GetClosestPointOnCollision Function Info',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_property_type', propertyPath: 'RelativeLocation' }), tr),
-      'Get RelativeLocation property type',
+      'Get RelativeLocation Property Type',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_object_class', objectPath: CUBE }), tr),
-      'Get Cube_1 class info',
+      'Get Cube_1 Class Info',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_property_value', objectPath: CUBE, propertyPath: 'RelativeLocation' }), tr),
@@ -122,16 +122,16 @@ describe('actionTitle (English)', () => {
         tool: 'unreal_get_function_info',
         params: { type: 'class(/Script/Engine.Actor)', functionName: 'K2_DestroyActor' },
       }), tr),
-      'Get Actor.K2_DestroyActor function info',
+      'Get Actor.K2_DestroyActor Function Info',
     )
   })
 
   it('titles domain tools through their dictionary labels', () => {
-    assert.equal(actionTitle(operation({ tool: 'unreal_screenshot' }), tr), 'Take screenshot')
-    assert.equal(actionTitle(operation({ tool: 'unreal_get_recent_log' }), tr), 'Read recent log')
+    assert.equal(actionTitle(operation({ tool: 'unreal_screenshot' }), tr), 'Take Screenshot')
+    assert.equal(actionTitle(operation({ tool: 'unreal_get_recent_log' }), tr), 'Read Recent Log')
     assert.equal(actionTitle(operation({ tool: 'unreal_compile_blueprint' }), tr), 'Compile Blueprint')
-    assert.equal(actionTitle(operation({ tool: 'unreal_connect_pins' }), tr), 'Connect pins')
-    assert.equal(actionTitle(operation({ tool: 'unreal_remove_umg_widget' }), tr), 'Remove widget')
+    assert.equal(actionTitle(operation({ tool: 'unreal_connect_pins' }), tr), 'Connect Pins')
+    assert.equal(actionTitle(operation({ tool: 'unreal_remove_umg_widget' }), tr), 'Remove Widget')
   })
 
   it('never blanks a card when the dictionary has no entry', () => {
@@ -148,8 +148,8 @@ describe('actionTitle (English)', () => {
   })
 
   it('normalizes a template that fills to extra whitespace', () => {
-    assert.equal(actionTitle(operation({ tool: 'unreal_get_enum_info' }), tr), 'Get enum info')
-    assert.equal(actionTitle(operation({ tool: 'unreal_get_property_type' }), tr), 'Get property type')
+    assert.equal(actionTitle(operation({ tool: 'unreal_get_enum_info' }), tr), 'Get Enum Info')
+    assert.equal(actionTitle(operation({ tool: 'unreal_get_property_type' }), tr), 'Get Property Type')
   })
 
   it('gives tool views a fallback label too', () => {

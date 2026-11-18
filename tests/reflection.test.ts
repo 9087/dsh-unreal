@@ -229,7 +229,7 @@ describe('ReflectionService failure handling', () => {
     })
     await reflection.structInfo('struct(/Script/CoreUObject.Vector)')
     assert.equal(cache.size, 1)
-    await assert.rejects(reflection.enumInfo('enum(/Script/Bogus)'), /returned nothing for/)
+    await assert.rejects(reflection.enumInfo('enum(/Script/Bogus)'), /No enum\./)
     assert.equal(cache.size, 1)
   })
 })
@@ -303,7 +303,7 @@ describe('object-class cache', () => {
         ? { ErrorCode: 2, ErrorMessage: 'No object.', Hint: '' }
         : ok({ ClassType: 'class(/Script/Engine.Actor)' })),
     }, { captured })
-    await assert.rejects(reflection.objectClass('/Game/Bad.Path'), /returned nothing for/)
+    await assert.rejects(reflection.objectClass('/Game/Bad.Path'), /No object\./)
     objectGone = false
     const resolved = await reflection.objectClass('/Game/Bad.Path')
     assert.equal(resolved.value.classType, 'class(/Script/Engine.Actor)')
@@ -367,10 +367,7 @@ describe('getEditorInfo', () => {
     const { reflection } = service({
       GetEditorInfo: () => ({ ErrorCode: 1, ErrorMessage: 'Not in an editor.', Hint: '' }),
     })
-    // The native contract degrades a missing answer to "no identity" rather than raising.
-    assert.deepEqual(await reflection.getEditorInfo(), {})
-    return
-    await assert.rejects(reflection.getEditorInfo(), /Not in an editor/)
+    await assert.rejects(reflection.getEditorInfo(), /Not in an editor\./)
   })
 })
 

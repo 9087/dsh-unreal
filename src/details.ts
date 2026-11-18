@@ -35,6 +35,8 @@ export interface DetailMemberType {
   readonly name: string
   /** Canonical Type string, when known. */
   readonly type?: string | undefined
+  /** UE display name text for this member, when the schema reported one. */
+  readonly displayNameText?: JsonValue | undefined
 }
 
 /** One row of a Details section. */
@@ -66,6 +68,7 @@ export interface DetailField {
   /** A short human note about the field. */
   readonly note?: string | undefined
 }
+
 
 /** What one section of a Details view is. */
 export type DetailSectionKind =
@@ -344,6 +347,7 @@ async function describeField(deps: DetailsDeps, field: DetailField): Promise<Det
         .map((member: MemberView) => ({
           name: member.name,
           ...(member.type === '' ? {} : { type: member.type }),
+          ...(member.displayNameText === undefined ? {} : { displayNameText: member.displayNameText as unknown as JsonValue }),
         }))
       return members.length === 0 ? field : { ...field, members }
     }
@@ -372,6 +376,7 @@ async function describeField(deps: DetailsDeps, field: DetailField): Promise<Det
   }
   return field
 }
+
 
 /**
  * Build one typed field.
@@ -531,6 +536,7 @@ export async function buildCallFunctionDetails(
           name,
           direction: parameter?.direction ?? 'output',
           ...(parameter === undefined || parameter.type === '' ? {} : { type: parameter.type }),
+          ...(parameter?.displayNameText === undefined ? {} : { displayNameText: parameter.displayNameText as unknown as JsonValue }),
           value: value as JsonValue,
         }
       })

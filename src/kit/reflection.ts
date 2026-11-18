@@ -279,9 +279,11 @@ function mapFunctionPayload(payload: unknown): FunctionView {
 
 /** Map one property row of a nested-JSON struct payload into the canonical view. */
 function mapPropertyPayload(property: unknown): MemberView {
+  const displayNameText = mapTextRefPayload(structField(property, 'DisplayNameText'))
   return {
     name: structString(property, 'Name'),
     type: structString(property, 'Type'),
+    ...(displayNameText === undefined ? {} : { displayNameText }),
   }
 }
 
@@ -291,6 +293,33 @@ function mapPropertyPayload(property: unknown): MemberView {
  * Stateless apart from the cache and client; one instance serves every tool
  * call and the enrichment of every record.
  */
+/** Read one operation's data out of its FEditorAutomationResult envelope; throws on failure. */
+function invokeOut(
+  result: { readonly payload: unknown; readonly outParameters: unknown },
+  functionName: string,
+  outParameterName: string,
+): unknown {
+  const envelope = result.payload
+  if (envelope !== null && typeof envelope === 'object' && !Array.isArray(envelope)) {
+    const record = envelope as Record<string, unknown>
+    const successValue = record['bSuccess']
+    const success = successValue === true || successValue === 'true'
+    if (successValue !== undefined && !success) {
+      const message = typeof record['ErrorMessage'] === 'string' ? record['ErrorMessage'] : ''
+      const hint = typeof record['Hint'] === 'string' ? record['Hint'] : ''
+      throw new KitError(
+        `editorautomation/${functionName}Failed`,
+        message === '' ? `${functionName} failed.` : message,
+        { functionName, ...(hint === '' ? {} : { hint }) },
+      )
+    }
+  }
+  const outParameters = result.outParameters
+  if (outParameters !== null && typeof outParameters === 'object' && !Array.isArray(outParameters)) {
+    return (outParameters as Record<string, unknown>)[outParameterName] ?? null
+  }
+  return result.payload
+}
 export class ReflectionService {
   private readonly client: EditorAutomationClient
 
@@ -341,7 +370,8 @@ export class ReflectionService {
    */
   async enumInfo(type: string, signal?: AbortSignal): Promise<CacheLookup<EnumInfoView>> {
     return await this.callThroughCache(cacheKey.enum(type), cacheKey.enum(type), async () => {
-      const { payload } = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetEnumInfo', { Type: type }, signal)
+      const invokeResult = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetEnumInfo', { Type: type }, signal)
+      const payload = invokeOut(invokeResult, 'GetEnumInfo', 'OutInfo')
       const enumPath = structString(payload, 'Enum')
       if (enumPath === '') emptyResult('GetEnumInfo', type)
       return {
@@ -364,7 +394,8 @@ export class ReflectionService {
    */
   async structInfo(type: string, signal?: AbortSignal): Promise<CacheLookup<StructInfoView>> {
     return await this.callThroughCache(cacheKey.struct(type), cacheKey.struct(type), async () => {
-      const { payload } = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetStructInfo', { Type: type }, signal)
+      const invokeResult = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetStructInfo', { Type: type }, signal)
+      const payload = invokeOut(invokeResult, 'GetStructInfo', 'OutInfo')
       const structPath = structString(payload, 'Struct')
       if (structPath === '') emptyResult('GetStructInfo', type)
       return {
@@ -383,7 +414,8 @@ export class ReflectionService {
    */
   async classInfo(type: string, signal?: AbortSignal): Promise<CacheLookup<ClassInfoView>> {
     return await this.callThroughCache(cacheKey.class(type), cacheKey.class(type), async () => {
-      const { payload } = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetClassInfo', { Type: type }, signal)
+      const invokeResult = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetClassInfo', { Type: type }, signal)
+      const payload = invokeOut(invokeResult, 'GetClassInfo', 'OutInfo')
       const classPath = structString(payload, 'Class')
       if (classPath === '') emptyResult('GetClassInfo', type)
       return {
@@ -407,12 +439,13 @@ export class ReflectionService {
       cacheKey.function(type, functionName),
       cacheKey.function(type, functionName),
       async () => {
-        const { payload } = await this.client.invoke(
+        const invokeResult = await this.client.invoke(
           EDITOR_AUTOMATION_LIBRARIES.core,
           'GetFunctionInfo',
           { Type: type, FunctionName: functionName },
           signal,
         )
+        const payload = invokeOut(invokeResult, 'GetFunctionInfo', 'OutInfo')
         if (structString(payload, 'Name') === '') emptyResult('GetFunctionInfo', `${type}.${functionName}`)
         return {
           path: structString(payload, 'Name'),
@@ -435,12 +468,13 @@ export class ReflectionService {
       cacheKey.propertyType(type, propertyPath),
       cacheKey.propertyType(type, propertyPath),
       async () => {
-        const { payload } = await this.client.invoke(
+        const invokeResult = await this.client.invoke(
           EDITOR_AUTOMATION_LIBRARIES.core,
           'GetPropertyType',
           { Type: type, PropertyPath: propertyPath },
           signal,
         )
+        const payload = invokeOut(invokeResult, 'GetPropertyType', 'OutInfo')
         if (typeof payload !== 'string' || payload === '') {
           // Newer builds return { Type, DisplayNameText }; a bare string is the older shape.
           const propertyType = typeof payload === 'string' ? payload : structString(payload, 'Type')
@@ -475,7 +509,8 @@ export class ReflectionService {
       cacheKey.objectClass(objectPath),
       cacheKey.objectClass(objectPath),
       async () => {
-        const { payload } = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetObjectClass', { ObjectPath: objectPath }, signal)
+        const invokeResult = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetObjectClass', { ObjectPath: objectPath }, signal)
+        const payload = invokeOut(invokeResult, 'GetObjectClass', 'OutClassType')
         if (typeof payload !== 'string' || payload === '') emptyResult('GetObjectClass', objectPath)
         return { classType: payload } satisfies ObjectClassView
       },
@@ -495,7 +530,8 @@ export class ReflectionService {
    * @throws {KitError} an EditorAutomation error or a classified transport failure.
    */
   async getEditorInfo(signal?: AbortSignal): Promise<EditorInfoView> {
-    const { payload } = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetEditorInfo', {}, signal)
+    const invokeResult = await this.client.invoke(EDITOR_AUTOMATION_LIBRARIES.core, 'GetEditorInfo', {}, signal)
+    const payload = invokeOut(invokeResult, 'GetEditorInfo', 'OutInfo')
     const processId = normalizeProcessId(structField(payload, 'ProcessId'))
     const engineVersion = structString(payload, 'EngineVersion')
     const projectName = structString(payload, 'ProjectName')

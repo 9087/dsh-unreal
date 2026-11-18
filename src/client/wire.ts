@@ -44,6 +44,8 @@ export interface DetailMemberTypeView {
   readonly name: string
   /** Canonical Type string, when known. */
   readonly type?: string | undefined
+  /** UE display name text for this member, when the schema reported one. */
+  readonly displayNameText?: unknown
 }
 
 /** One row of an enriched Details section. */
@@ -248,7 +250,11 @@ function narrowMembers(raw: unknown): DetailMemberTypeView[] | undefined {
   for (const entry of raw.slice(0, 64)) {
     const name = text(entry, 'name')
     if (name === undefined) continue
-    members.push({ name, type: text(entry, 'type') })
+    members.push({
+      name,
+      type: text(entry, 'type'),
+      ...(field(entry, 'displayNameText') === undefined ? {} : { displayNameText: field(entry, 'displayNameText') }),
+    })
   }
   return members.length === 0 ? undefined : members
 }

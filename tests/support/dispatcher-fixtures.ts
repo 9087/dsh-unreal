@@ -1,17 +1,76 @@
 /**
  * Test-side adapter for fake transports.
  *
- * The plugin now reaches every EditorAutomation library function through the generic
- * `CallFunction` dispatcher, so a fake transport receives
+ * Every EditorAutomation library function is reached through the generic `CallFunction`
+ * dispatcher, so a fake transport receives
  * `{FunctionName: 'CallFunction', Parameters: {ObjectPath, FunctionName, ParametersJson}}`
- * and must answer with a `FEditorAutomationCallFunctionResult` envelope whose
- * `ReturnValueJson` holds the function's nested-JSON payload.
+ * and answers with a `FEditorAutomationCallFunctionResult` envelope whose
+ * `ReturnValueJson` is the operation's `FEditorAutomationResult` and whose
+ * `OutParametersJson` holds the operation's data outputs.
  *
- * These helpers let the existing fixtures (written against the old per-function
- * result structs) keep driving the tests: `wrapCallFunctionAnswer` converts a
- * legacy result struct into the dispatcher envelope, and `innerCall` extracts the
- * inner function name/parameters from a dispatcher request.
+ * These helpers let fixtures (written against the old per-function result structs) keep
+ * driving the tests: `wrapCallFunctionAnswer` converts a legacy fixture into the current
+ * envelope + out-parameter answer, and `innerCall` extracts the inner request.
  */
+
+/** Map one operation to the name of its (single) data out-parameter. */
+const OUT_PARAMETER: Readonly<Record<string, string>> = {
+  Ping: 'OutValue',
+  GetEditorInfo: 'OutInfo',
+  CaptureScreenshot: 'OutFilePath',
+  IsPIERunning: 'OutRunning',
+  GetEnumInfo: 'OutInfo',
+  GetStructInfo: 'OutInfo',
+  GetClassInfo: 'OutInfo',
+  GetFunctionInfo: 'OutInfo',
+  GetPropertyType: 'OutInfo',
+  GetObjectClass: 'OutClassType',
+  GetPropertyValue: 'OutValueJson',
+  SetPropertyValue: 'OutWrite',
+  GetRecentLog: 'OutPage',
+  GetBlueprintInfo: 'OutInfo',
+  GetBlueprintLuaPath: 'OutLuaPath',
+  GetBlueprintGraphs: 'OutGraphs',
+  GetGraphNodes: 'OutNodes',
+  GetNodePins: 'OutPins',
+  AddCallFunctionNode: 'OutNodeObjectPath',
+  AddEventNode: 'OutNodeObjectPath',
+  AddComponentBoundEventNode: 'OutNodeObjectPath',
+  AddBranchNode: 'OutNodeObjectPath',
+  AddVariableGetNode: 'OutNodeObjectPath',
+  AddVariableSetNode: 'OutNodeObjectPath',
+  RemoveGraphNodesByClass: 'OutRemovedCount',
+  GetCurrentLevelInfo: 'OutInfo',
+  IsCurrentLevelDirty: 'OutDirty',
+  GetLevelScriptBlueprint: 'OutBlueprint',
+  ListAssets: 'OutAssets',
+  ListFolders: 'OutFolders',
+  GetAssetInfo: 'OutInfo',
+  DoesAssetExist: 'OutExists',
+  LoadAsset: 'OutAsset',
+  GetDirtyAssets: 'OutDirtyAssets',
+  GetWidgetRoots: 'OutRoots',
+  GetWidgetBlueprintPath: 'OutBlueprintPath',
+  GetWidgetClassPath: 'OutClassPath',
+  GetWidgetTreeDiff: 'OutDiff',
+  GetWidgetGeometry: 'OutGeometry',
+  GetListViewInfo: 'OutInfo',
+  GetListEntryInfo: 'OutEntry',
+  ScrollToListEntry: 'OutEntry',
+  CaptureWidgetScreenshot: 'OutFilePath',
+  CreateWidgetBlueprint: 'OutWidgetBlueprintPath',
+  AddRootWidget: 'OutWidgetPath',
+  GetWidgetTree: 'OutWidgets',
+  GetWidgetParent: 'OutParent',
+  GetWidgetChildren: 'OutChildren',
+  GetWidgetSlot: 'OutSlot',
+  AddWidget: 'OutWidgetPath',
+  RenameWidget: 'OutWidgetPath',
+  IsWidgetVariable: 'OutIsVariable',
+  GetUserWidgetRoot: 'OutRootWidget',
+  GetWidgetTextActiveStates: 'OutStates',
+  IsMouseInputPending: 'OutPending'
+}
 
 /** Parse the inner EditorAutomation function out of a CallFunction request. */
 export function innerCall(body: {
@@ -47,11 +106,10 @@ function stripErrorFields(value: Record<string, unknown>): Record<string, unknow
   return rest
 }
 
-/** Convert one legacy result struct into the native payload the new contract returns. */
-function payloadFor(functionName: string, legacy: Record<string, unknown>): unknown {
+/** Convert one legacy result struct into the data value the new contract returns. */
+function dataFor(functionName: string, legacy: Record<string, unknown>): unknown {
   switch (functionName) {
     case 'GetPropertyType':
-      // The function returns FEditorAutomationPropertyTypeInfo; older fixtures only carry Type.
       return {
         Type: legacy['Type'] ?? '',
         DisplayNameText: legacy['DisplayNameText'] ?? {},
@@ -62,13 +120,19 @@ function payloadFor(functionName: string, legacy: Record<string, unknown>): unkn
       return legacy['ValueJson'] ?? ''
     case 'SetPropertyValue':
       return {
-        bSuccess: true,
         OldValueJson: legacy['OldValueJson'] ?? '',
         NewValueJson: legacy['NewValueJson'] ?? '',
         DisplayNameText: legacy['DisplayNameText'],
       }
     case 'CaptureScreenshot':
-      return legacy['FilePath'] ?? ''
+    case 'CaptureWidgetScreenshot':
+      return legacy['FilePath'] ?? legacy['ScreenshotPath'] ?? ''
+    case 'IsPIERunning':
+    case 'IsCurrentLevelDirty':
+    case 'IsWidgetVariable':
+    case 'IsMouseInputPending':
+    case 'DoesAssetExist':
+      return legacy['bSuccess'] !== false
     case 'StartPIE':
     case 'StopPIE':
     case 'FocusPIEViewport':
@@ -79,39 +143,33 @@ function payloadFor(functionName: string, legacy: Record<string, unknown>): unkn
   }
 }
 
-/** Wrap a legacy fixture into the CallFunction dispatcher's result envelope. */
+/** Wrap a legacy fixture into the CallFunction dispatcher's current result shape. */
 export function wrapCallFunctionAnswer(functionName: string, fixture: unknown): unknown {
   if (isDispatcherResult(fixture)) return fixture
-  if (fixture === null || typeof fixture !== 'object' || Array.isArray(fixture)) {
-    return {
-      ErrorCode: 0,
-      ErrorMessage: '',
-      Hint: '',
-      ReturnValueJson: JSON.stringify(fixture ?? null),
-      OutParametersJson: '{}',
-      ReturnType: '',
-    }
-  }
-  const record = fixture as Record<string, unknown>
-  // The native contract reports failure by returning an empty value and logging the reason,
-  // so a legacy error fixture maps to an empty payload rather than a dispatcher error.
-  const code = typeof record['ErrorCode'] === 'number' ? record['ErrorCode'] : 0
-  if (code !== 0) {
-    return {
-      ErrorCode: 0,
-      ErrorMessage: '',
-      Hint: '',
-      ReturnValueJson: '{}',
-      OutParametersJson: '{}',
-      ReturnType: '',
-    }
-  }
-  return {
+
+  const outName = OUT_PARAMETER[functionName]
+  const answer = (success: boolean, data: unknown, errorCode = 0, errorMessage = '', hint = ''): unknown => ({
     ErrorCode: 0,
     ErrorMessage: '',
     Hint: '',
-    ReturnValueJson: JSON.stringify(payloadFor(functionName, record)),
-    OutParametersJson: '{}',
     ReturnType: '',
+    ReturnValueJson: JSON.stringify(
+      success
+        ? { bSuccess: 'true', ErrorCode: '0', ErrorMessage: '', Hint: '' }
+        : { bSuccess: 'false', ErrorCode: String(errorCode), ErrorMessage: errorMessage, Hint: hint },
+    ),
+    OutParametersJson: success && outName !== undefined ? JSON.stringify({ [outName]: data }) : '{}',
+  })
+
+  if (fixture === null || typeof fixture !== 'object' || Array.isArray(fixture)) {
+    return answer(true, fixture ?? null)
   }
+  const record = fixture as Record<string, unknown>
+  const code = typeof record['ErrorCode'] === 'number' ? record['ErrorCode'] : 0
+  if (code !== 0) {
+    const message = typeof record['ErrorMessage'] === 'string' ? record['ErrorMessage'] : ''
+    const hint = typeof record['Hint'] === 'string' ? record['Hint'] : ''
+    return answer(false, null, code, message, hint)
+  }
+  return answer(true, dataFor(functionName, record))
 }

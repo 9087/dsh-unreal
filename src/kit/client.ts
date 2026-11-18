@@ -38,6 +38,10 @@ export interface EditorAutomationInvokeResult {
   /** Canonical Type string of the return value; empty when the function returns nothing. */
   readonly returnType: string
   readonly returnedNothing: boolean
+  /** Parsed OutParametersJson: the operation's data outputs. */
+  readonly outParameters: unknown
+  /** The raw OutParametersJson text. */
+  readonly outParametersJson: string
 }
 
 /** Parse one nested-JSON text; empty text is null, unparsable text is returned as-is. */
@@ -222,11 +226,14 @@ export class EditorAutomationClient {
     )
     const result = assertKitResult<KitCallFunctionResult>('CallFunction', returned)
     const raw = result.ReturnValueJson ?? ''
+    const rawOut = result.OutParametersJson ?? '{}'
     return {
       payload: parseNestedJsonText(raw),
       raw,
       returnType: result.ReturnType ?? '',
       returnedNothing: raw.trim() === '',
+      outParameters: parseNestedJsonText(rawOut),
+      outParametersJson: rawOut,
     }
   }
 
