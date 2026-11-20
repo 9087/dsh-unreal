@@ -27,8 +27,9 @@ import { formatValue } from './format.ts'
 import type { MsgKey } from './locales.ts'
 import { typeLabel } from './type-label.ts'
 import { cachedMembers, ensureMembers } from './member-cache.ts'
+import { ensureSignature } from './signature-cache.ts'
 import { fetchScreenshot } from './wire.ts'
-import type { DetailFieldView, DetailMemberTypeView, DetailSectionView, DetailView, OperationView, RpcCaller } from './wire.ts'
+import type { DetailFieldView, DetailMemberTypeView, DetailSectionView, DetailView, OperationView, RcCallView, RpcCaller, SignatureView } from './wire.ts'
 
 /** A message lookup, as the seat's translator provides it. */
 type Tr = (key: MsgKey) => string
@@ -1054,10 +1055,79 @@ function fallbackSections(
 }
 
 /**
+ * Parse one record's nested-JSON text into a field record; empty when unreadable.
+ *
+ * @param json - the raw text stored on the record.
+ * @returns the object, or an empty record.
+ */
+function rcRecord(json: string | undefined): Record<string, unknown> {
+  if (json === undefined || json.trim() === '') return {}
+  try {
+    const value = JSON.parse(json) as unknown
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Build Inputs/Outputs from one record's primary RC call.
+ *
+ * The signature (fetched from the host when available) supplies the Engine's
+ * names, Types, directions and display names; without it the raw RC keys still
+ * beat the tool's own camelCase arguments, so the card names the call correctly.
+ *
+ * @param rc - the record's primary RC call.
+ * @param signature - the reflected signature, when the host resolved it.
+ * @returns the sections, each present only when it has fields.
+ */
+function rcFallbackSections(
+  rc: RcCallView,
+  signature: SignatureView | undefined,
+): { readonly inputs: DetailSectionView[]; readonly outputs: DetailSectionView[] } {
+  const provided = rcRecord(rc.parametersJson)
+  const outProvided = rcRecord(rc.outParametersJson)
+  const parameters = signature?.parameters ?? []
+  const consumed = new Set<string>()
+  const inputs: DetailFieldView[] = []
+  for (const parameter of parameters) {
+    if (parameter.direction === 'output') continue
+    const has = Object.prototype.hasOwnProperty.call(provided, parameter.name)
+    consumed.add(parameter.name)
+    inputs.push({
+      name: parameter.name,
+      ...(has ? { value: provided[parameter.name] } : { omitted: true }),
+      ...(parameter.type === '' ? {} : { type: parameter.type }),
+      direction: 'input',
+      ...(parameter.displayNameText === undefined ? {} : { displayNameText: parameter.displayNameText }),
+    })
+  }
+  for (const [name, value] of Object.entries(provided)) {
+    if (consumed.has(name)) continue
+    inputs.push({ name, direction: 'input', value })
+  }
+  const outputs: DetailFieldView[] = []
+  for (const [name, value] of Object.entries(outProvided)) {
+    const parameter = parameters.find(candidate => candidate.name === name && candidate.direction !== 'input')
+    outputs.push({
+      name,
+      direction: parameter?.direction ?? 'output',
+      ...(parameter === undefined || parameter.type === '' ? {} : { type: parameter.type }),
+      ...(parameter?.displayNameText === undefined ? {} : { displayNameText: parameter.displayNameText }),
+      value,
+    })
+  }
+  return {
+    inputs: inputs.length === 0 ? [] : [{ kind: 'inputs', fields: inputs }],
+    outputs: outputs.length === 0 ? [] : [{ kind: 'outputs', fields: outputs }],
+  }
+}
+
+/**
  * The enriched Details view of one record.
  *
- * @param props - the record's typed Details, its raw parameters/result for the fallback
- *   sections, and the panel context.
+ * @param props - the record's typed Details, its raw parameters/result and primary
+ *   RC call for the fallback sections, and the panel context.
  * @returns the sections, or nothing when the record has no displayable data.
  */
 export function DetailsView(props: {
@@ -1068,12 +1138,42 @@ export function DetailsView(props: {
   readonly tool?: string | undefined
   readonly params?: unknown
   readonly result?: unknown
+  readonly rc?: RcCallView | undefined
 }): ReactNode {
   const base = props.details === undefined
     ? []
     : withLegacyCalls(props.details.sections, props.tool, props.result)
-  const { inputs, outputs } = fallbackSections(base, props.params, props.result)
-  const sections = [...inputs, ...base, ...outputs]
+  const baseKinds = new Set(base.map(section => section.kind))
+  const missingInputs = !baseKinds.has('inputs') && !baseKinds.has('calls')
+  const renderedOutputs = baseKinds.has('outputs') || baseKinds.has('returns') || baseKinds.has('screenshot')
+    || baseKinds.has('calls') || baseKinds.has('change') || baseKinds.has('value') || baseKinds.has('type')
+  const missingOutputs = !renderedOutputs
+  const rc = props.rc
+  const usesRcFallback = rc !== undefined && (missingInputs || missingOutputs)
+  const [rcFallback, setRcFallback] = useState<{
+    readonly inputs: DetailSectionView[]
+    readonly outputs: DetailSectionView[]
+  } | undefined>(undefined)
+  useEffect(() => {
+    if (rc === undefined || props.caller === undefined || (!missingInputs && !missingOutputs)) return
+    // The raw RC keys render immediately; the signature upgrades them to reflected
+    // Types and display names once the host answers (cached per function).
+    setRcFallback(rcFallbackSections(rc, undefined))
+    const controller = new AbortController()
+    let alive = true
+    void ensureSignature(props.caller, rc.objectPath, rc.functionName, controller.signal)
+      .then(signature => { if (alive) setRcFallback(rcFallbackSections(rc, signature)) })
+      .catch(() => {})
+    return () => { alive = false; controller.abort() }
+  }, [props.caller, rc?.objectPath, rc?.functionName, missingInputs, missingOutputs])
+  const fallback = usesRcFallback && rc !== undefined
+    ? (rcFallback ?? rcFallbackSections(rc, undefined))
+    : fallbackSections(base, props.params, props.result)
+  const sections = [
+    ...(missingInputs ? fallback.inputs : []),
+    ...base,
+    ...(missingOutputs ? fallback.outputs : []),
+  ]
   if (sections.length === 0) return undefined
   return (
     <RpcCallerContext.Provider value={props.caller}>

@@ -26,7 +26,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 
 import type { ResolvedConfig } from './config.ts'
 import { captureRcCall, withRcCapture, type RcCallSnapshot } from './audit-capture.ts'
-import { buildBatchCallDetails, buildCallFunctionDetails, buildDefaultCallDetails, buildPropertyValueDetails, buildPropertyWriteDetails, buildScreenshotDetails } from './details.ts'
+import { buildBatchCallDetails, buildCallFunctionDetails, buildDefaultCallDetails, buildPropertyValueDetails, buildPropertyWriteDetails, buildScreenshotDetails, mergeCallDetails } from './details.ts'
 import type { CallDetails, DetailsDeps } from './details.ts'
 import { EditorAutomationClient, assertKitResult } from './kit/client.ts'
 import { KitError, asKitError } from './kit/errors.ts'
@@ -252,6 +252,12 @@ interface AuditMeta {
    */
   readonly primaryFunction?: string | undefined
   /**
+   * Set when the bespoke Details builder fully describes the call's own Inputs/Outputs
+   * (e.g. `unreal_call_function` shows the *target* signature, not the dispatcher request),
+   * so the reflected default sections would only duplicate dispatcher-level data.
+   */
+  readonly skipDefaultDetails?: boolean | undefined
+  /**
    * Typed-enrichment builder, run after the body so it can see the result too.
    * Best-effort: a builder that throws or times out only costs this record's
    * Details, never the call itself.
@@ -369,19 +375,25 @@ async function enrich(
   outcome: AuditedOutcome,
   rcCalls: readonly RcCallSnapshot[],
 ): Promise<CallDetails | undefined> {
-  // No bespoke builder: the default one reflects the requests the body actually made,
-  // so even a thin tool gets Inputs/Outputs with the Engine's Types and display names.
-  const builder = meta.details ?? (rcCalls.length === 0
-    ? undefined
-    : async () => await buildDefaultCallDetails(detailsDeps(deps, exec), rcCalls))
-  if (builder === undefined) return undefined
   if (outcome.error !== undefined && outcome.error.code.startsWith('rc/')) return undefined
+  // Both halves are wanted even when a bespoke builder exists: the tool contributes
+  // what only it knows (screenshot preview, property before/after), the default builder
+  // contributes the reflected Inputs/Outputs of the RC call it actually made.
+  const wantsDefaults = meta.skipDefaultDetails !== true && rcCalls.length > 0
+  if (meta.details === undefined && !wantsDefaults) return undefined
   let timer: NodeJS.Timeout | undefined
   try {
     const timeout = new Promise<undefined>((settle) => {
       timer = setTimeout(() => { settle(undefined) }, deps.config.enrichmentTimeoutMs)
     })
-    return await Promise.race([builder(outcome), timeout])
+    const build = async (): Promise<CallDetails | undefined> => {
+      const [custom, defaults] = await Promise.all([
+        meta.details === undefined ? undefined : meta.details(outcome),
+        wantsDefaults ? buildDefaultCallDetails(detailsDeps(deps, exec), rcCalls) : undefined,
+      ])
+      return mergeCallDetails(custom, defaults)
+    }
+    return await Promise.race([build(), timeout])
   } catch {
     return undefined
   } finally {
@@ -1443,6 +1455,9 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
         {
           tool: 'unreal_call_function',
           params: args,
+          // The bespoke builder shows the target function's signature; the default
+          // one would repeat the dispatcher request (ObjectPath/FunctionName/ParametersJson).
+          skipDefaultDetails: true,
           details: async outcome => {
             if (wire === undefined) return undefined
             return await buildCallFunctionDetails(detailsDeps(deps, exec), {
@@ -1552,6 +1567,9 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           // Record the real request: each call's parametersJson belongs under Raw params,
           // so the Raw result must not echo them a second time.
           params: { calls },
+          // The bespoke builder describes every sub-call; the dispatcher-level request
+          // (one CallsJson array) would be noise above them.
+          skipDefaultDetails: true,
           details: async () => batchDetails,
         },
         async () => {
@@ -1917,13 +1935,15 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
     async execute(args, exec) {
       const groups = Array.isArray(args.groups) ? args.groups.map(group => String(group)) : []
       const enabled = args.enabled === true
-      const current = groupsFor(exec.agent?.id === undefined ? undefined : String(exec.agent.id))
-      for (const group of groups) {
-        if (enabled) current.add(group)
-        else current.delete(group)
-      }
-      const text = `${enabled ? 'enabled' : 'disabled'}: ${groups.join(', ')}`
-      return { value: { groups, enabled, text }, resultSummary: text }
+      return await audited(deps, exec, { tool: 'unreal_set_tool_groups', params: { groups, enabled } }, async () => {
+        const current = groupsFor(exec.agent?.id === undefined ? undefined : String(exec.agent.id))
+        for (const group of groups) {
+          if (enabled) current.add(group)
+          else current.delete(group)
+        }
+        const text = `${enabled ? 'enabled' : 'disabled'}: ${groups.join(', ')}`
+        return { value: { groups, enabled, text }, resultSummary: text }
+      })
     },
   }))
 

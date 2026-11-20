@@ -19,6 +19,7 @@
 
 import type { EditorAutomationClient } from './client.ts'
 import { captureRcCall } from '../audit-capture.ts'
+import type { RcCallSnapshot } from '../audit-capture.ts'
 import { KitError, isKitError } from './errors.ts'
 import { EDITOR_AUTOMATION_LIBRARIES, parameterDirectionName } from './types.ts'
 import type { CacheLookup, SchemaCache } from '../schema-cache.ts'
@@ -329,6 +330,13 @@ export class ReflectionService {
   private readonly log: ((line: string) => void) | undefined
 
   /**
+   * The RC request that loaded each cache entry, so a cache hit can still appear on
+   * the tool card as the call the tool logically made — with the real request and the
+   * real Engine answer it was loaded from.
+   */
+  private readonly rawCalls = new Map<string, RcCallSnapshot>()
+
+  /**
    * @param deps - client, cache and optional log sink.
    */
   constructor(deps: ReflectionServiceDeps) {
@@ -347,6 +355,8 @@ export class ReflectionService {
    * @param functionName - UFunction name.
    * @param parameters - the request parameters.
    * @param signal - caller cancellation.
+   * @param cacheKey - the schema entry this request loads, so a later cache hit can
+   *   replay the same RC call onto that tool's card.
    * @returns the parsed invoke result.
    */
   private async invokeRecorded(
@@ -354,16 +364,19 @@ export class ReflectionService {
     functionName: string,
     parameters: Record<string, unknown>,
     signal?: AbortSignal,
+    cacheKey?: string,
   ): Promise<Awaited<ReturnType<EditorAutomationClient['invoke']>>> {
     const result = await this.client.invoke(library, functionName, parameters, signal)
-    captureRcCall({
+    const snapshot: RcCallSnapshot = {
       objectPath: library,
       functionName,
       parametersJson: JSON.stringify(parameters),
       outParametersJson: result.outParametersJson,
       returnValueJson: result.raw,
       returnType: result.returnType,
-    })
+    }
+    captureRcCall(snapshot)
+    if (cacheKey !== undefined) this.rawCalls.set(cacheKey, snapshot)
     return result
   }
 
@@ -401,8 +414,9 @@ export class ReflectionService {
    * @returns the view and where it came from.
    */
   async enumInfo(type: string, signal?: AbortSignal): Promise<CacheLookup<EnumInfoView>> {
-    return await this.callThroughCache(cacheKey.enum(type), cacheKey.enum(type), async () => {
-      const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetEnumInfo', { Type: type }, signal)
+    const key = cacheKey.enum(type)
+    return await this.callThroughCache(key, key, async () => {
+      const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetEnumInfo', { Type: type }, signal, key)
       const payload = invokeOut(invokeResult, 'GetEnumInfo', 'OutInfo')
       const enumPath = structString(payload, 'Enum')
       if (enumPath === '') emptyResult('GetEnumInfo', type)
@@ -425,8 +439,9 @@ export class ReflectionService {
    * @returns the view and where it came from.
    */
   async structInfo(type: string, signal?: AbortSignal): Promise<CacheLookup<StructInfoView>> {
-    return await this.callThroughCache(cacheKey.struct(type), cacheKey.struct(type), async () => {
-      const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetStructInfo', { Type: type }, signal)
+    const key = cacheKey.struct(type)
+    return await this.callThroughCache(key, key, async () => {
+      const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetStructInfo', { Type: type }, signal, key)
       const payload = invokeOut(invokeResult, 'GetStructInfo', 'OutInfo')
       const structPath = structString(payload, 'Struct')
       if (structPath === '') emptyResult('GetStructInfo', type)
@@ -445,8 +460,9 @@ export class ReflectionService {
    * @returns the view and where it came from.
    */
   async classInfo(type: string, signal?: AbortSignal): Promise<CacheLookup<ClassInfoView>> {
-    return await this.callThroughCache(cacheKey.class(type), cacheKey.class(type), async () => {
-      const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetClassInfo', { Type: type }, signal)
+    const key = cacheKey.class(type)
+    return await this.callThroughCache(key, key, async () => {
+      const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetClassInfo', { Type: type }, signal, key)
       const payload = invokeOut(invokeResult, 'GetClassInfo', 'OutInfo')
       const classPath = structString(payload, 'Class')
       if (classPath === '') emptyResult('GetClassInfo', type)
@@ -467,15 +483,17 @@ export class ReflectionService {
    * @returns the view and where it came from.
    */
   async functionInfo(type: string, functionName: string, signal?: AbortSignal): Promise<CacheLookup<FunctionInfoView>> {
+    const key = cacheKey.function(type, functionName)
     return await this.callThroughCache(
-      cacheKey.function(type, functionName),
-      cacheKey.function(type, functionName),
+      key,
+      key,
       async () => {
         const invokeResult = await this.invokeRecorded(
           EDITOR_AUTOMATION_LIBRARIES.core,
           'GetFunctionInfo',
           { Type: type, FunctionName: functionName },
           signal,
+          key,
         )
         const payload = invokeOut(invokeResult, 'GetFunctionInfo', 'OutInfo')
         if (structString(payload, 'Name') === '') emptyResult('GetFunctionInfo', `${type}.${functionName}`)
@@ -496,15 +514,17 @@ export class ReflectionService {
    * @returns the view and where it came from.
    */
   async propertyType(type: string, propertyPath: string, signal?: AbortSignal): Promise<CacheLookup<PropertyTypeView>> {
+    const key = cacheKey.propertyType(type, propertyPath)
     return await this.callThroughCache(
-      cacheKey.propertyType(type, propertyPath),
-      cacheKey.propertyType(type, propertyPath),
+      key,
+      key,
       async () => {
         const invokeResult = await this.invokeRecorded(
           EDITOR_AUTOMATION_LIBRARIES.core,
           'GetPropertyType',
           { Type: type, PropertyPath: propertyPath },
           signal,
+          key,
         )
         const payload = invokeOut(invokeResult, 'GetPropertyType', 'OutInfo')
         if (typeof payload !== 'string' || payload === '') {
@@ -537,11 +557,12 @@ export class ReflectionService {
    * @returns the canonical class Type and where it came from.
    */
   async objectClass(objectPath: string, signal?: AbortSignal): Promise<CacheLookup<ObjectClassView>> {
+    const key = cacheKey.objectClass(objectPath)
     return await this.callThroughCache(
-      cacheKey.objectClass(objectPath),
-      cacheKey.objectClass(objectPath),
+      key,
+      key,
       async () => {
-        const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetObjectClass', { ObjectPath: objectPath }, signal)
+        const invokeResult = await this.invokeRecorded(EDITOR_AUTOMATION_LIBRARIES.core, 'GetObjectClass', { ObjectPath: objectPath }, signal, key)
         const payload = invokeOut(invokeResult, 'GetObjectClass', 'OutClassType')
         if (typeof payload !== 'string' || payload === '') emptyResult('GetObjectClass', objectPath)
         return { classType: payload } satisfies ObjectClassView
@@ -592,6 +613,13 @@ export class ReflectionService {
   ): Promise<CacheLookup<T>> {
     try {
       const lookup = await this.cache.getOrLoad(key, load)
+      if (lookup.cached) {
+        // A schema-cache hit still means the tool logically made this RC call; replay
+        // the recorded request/answer so its card keeps the same Inputs/Outputs as a call
+        // that had to reach the editor.
+        const snapshot = this.rawCalls.get(key)
+        if (snapshot !== undefined) captureRcCall(snapshot)
+      }
       this.log?.(
         `dsh-unreal: reflection ${lookup.source} ${label}` +
         `${lookup.cached ? ` (age ${lookup.ageMs}ms)` : ''}`,

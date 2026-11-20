@@ -591,6 +591,7 @@ export async function buildDefaultCallDetails(
   const inputs: DetailField[] = []
   const outputs: DetailField[] = []
   const other: DetailSection[] = []
+  let truncated = false
   for (const call of calls) {
     const details = await buildCallFunctionDetails(deps, {
       objectPath: call.objectPath,
@@ -599,6 +600,9 @@ export async function buildDefaultCallDetails(
       result: { returnValueJson: '', outParametersJson: call.outParametersJson, returnType: '' },
     })
     if (details === undefined) continue
+    // A section dropped inside one call's budget stays dropped, but the card must
+    // still say the Details are partial.
+    if (details.truncated === true) truncated = true
     for (const section of details.sections) {
       if (section.kind === 'inputs') inputs.push(...(section.fields ?? []))
       else if (section.kind === 'outputs') outputs.push(...(section.fields ?? []))
@@ -610,7 +614,45 @@ export async function buildDefaultCallDetails(
   sections.push(...other)
   if (outputs.length > 0) sections.push({ kind: 'outputs', fields: outputs.slice(0, DETAIL_LIMITS.maxFields) })
   if (sections.length === 0) return undefined
-  return boundDetails({ v: 1, sections }, deps.maxChars)
+  return boundDetails({ v: 1, sections, ...(truncated ? { truncated: true } : {}) }, deps.maxChars)
+}
+
+/**
+ * Combine a tool's own Details sections with the default ones derived from the RC
+ * call the tool made.
+ *
+ * A bespoke builder usually contributes what only that tool knows (a screenshot
+ * preview, a property's before/after); the reflected Inputs/Outputs are still the
+ * card's primary data, so their sections are added when the tool did not build
+ * one of the same kind. An existing section wins: a builder that already shaped
+ * the call's inputs (e.g. `unreal_call_function`'s target signature) keeps them.
+ *
+ * @param custom - the tool's own Details, when it has a builder.
+ * @param defaults - the reflected call Details, when the tool made an RC call.
+ * @returns the merged Details, or whichever side exists.
+ */
+export function mergeCallDetails(
+  custom: CallDetails | undefined,
+  defaults: CallDetails | undefined,
+): CallDetails | undefined {
+  if (custom === undefined) return defaults
+  if (defaults === undefined) return custom
+  const kinds = new Set(custom.sections.map(section => section.kind))
+  const inputs = defaults.sections.filter(section => section.kind === 'inputs')
+  const outputs = defaults.sections.filter(section => section.kind === 'outputs')
+  const rest = defaults.sections.filter(section => section.kind !== 'inputs' && section.kind !== 'outputs' && !kinds.has(section.kind))
+  const sections: DetailSection[] = [
+    ...(kinds.has('inputs') ? [] : inputs),
+    ...custom.sections,
+    ...(kinds.has('outputs') ? [] : outputs),
+    // A builder with no sections of its own leaves room for every default section.
+    ...(custom.sections.length === 0 ? rest : []),
+  ]
+  return {
+    ...custom,
+    sections,
+    ...(defaults.truncated === true ? { truncated: true } : {}),
+  }
 }
 
 /**

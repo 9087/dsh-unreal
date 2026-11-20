@@ -273,6 +273,17 @@ describe('tool calls and their history rows', () => {
     assert.equal(store.records[0]!.errorCode, 'rc/bad-response')
   })
 
+  it('unreal_set_tool_groups records a row like every other tool', async () => {
+    mount([])
+    const value = await invoke('unreal_set_tool_groups', { groups: ['umg'], enabled: true }) as { text: string }
+
+    assert.equal(value.text, 'enabled: umg')
+    assert.equal(store.records.length, 1)
+    assert.equal(store.records[0]!.tool, 'unreal_set_tool_groups')
+    assert.equal(store.records[0]!.ok, true)
+    assert.deepEqual(store.records[0]!.params, { groups: ['umg'], enabled: true })
+  })
+
   it('unreal_ping carries the editor identity when GetEditorInfo answers', async () => {
     const projectDir = 'C:\\PROJECTS\\UnrealEngine\\Game'
     mount(['pong', result({
@@ -749,7 +760,15 @@ describe('tool calls and their history rows', () => {
     assert.match(sentPath, /dsh-unreal[\\/]screenshots/, `expected the adapter temp directory, got ${sentPath}`)
     // The record keeps the same path and a preview section the card renders from the host.
     assert.equal(store.records[0]!.result && (store.records[0]!.result as Record<string, unknown>)['filePath'], filePath)
-    assert.equal(store.records[0]!.details?.sections[0]?.kind, 'screenshot')
+    const sections = store.records[0]!.details?.sections ?? []
+    // The reflected call inputs lead, the tool's preview follows.
+    assert.equal(sections[0]?.kind, 'inputs')
+    assert.ok(sections.some(section => section.kind === 'screenshot'))
+    const inputs = sections.find(section => section.kind === 'inputs')
+    assert.deepEqual(
+      (inputs?.fields ?? []).map(field => field.name),
+      ['FilePath', 'Target', 'bShowUI'],
+    )
     await rm(directory, { recursive: true, force: true })
   })
 

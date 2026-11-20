@@ -17,6 +17,7 @@ import {
   buildDefaultCallDetails,
   buildPropertyValueDetails,
   buildPropertyWriteDetails,
+  mergeCallDetails,
 } from '../src/details.ts'
 import { EditorAutomationClient } from '../src/kit/client.ts'
 import type { FetchLike } from '../src/kit/client.ts'
@@ -364,6 +365,47 @@ describe('buildCallFunctionDetails', () => {
     assert.equal(outputs[0]?.value, 'C:/x.png')
     assert.equal((outputs[0]?.displayNameText as { nativeText?: string } | undefined)?.nativeText, 'File Path')
   })
+  it('keeps the truncated flag when a large out parameter is dropped by the budget', async () => {
+    const properties = Array.from({ length: 40 }, (_, index) => ({
+      Name: `Property${String(index)}`,
+      Type: 'string',
+      DisplayNameText: { NativeText: `Property ${String(index)}` },
+      Description: 'x'.repeat(300),
+    }))
+    const details = await buildDefaultCallDetails(deps({
+      maxChars: 4000,
+      overrides: {
+        GetFunctionInfo: () => ok({
+          Info: {
+            Name: 'GetClassInfo',
+            bBlueprintCallable: true,
+            bStatic: true,
+            Parameters: [
+              { Name: 'Type', Type: 'string', Direction: 0, DisplayNameText: { NativeText: 'Type' } },
+              { Name: 'OutInfo', Type: 'struct(/Script/EditorAutomation.EditorAutomationClassInfo)', Direction: 1 },
+            ],
+            ReturnType: 'struct(/Script/EditorAutomation.EditorAutomationResult)',
+          },
+        }),
+        GetStructInfo: () => ok({
+          Info: {
+            Struct: '/Script/EditorAutomation.EditorAutomationClassInfo',
+            Properties: [{ Name: 'Class', Type: 'string' }],
+          },
+        }),
+      },
+    }), [{
+      objectPath: '/Script/EditorAutomation.Default__EditorAutomationCoreLibrary',
+      functionName: 'GetClassInfo',
+      parametersJson: '{"Type":"class(/Script/Engine.Actor)"}',
+      outParametersJson: JSON.stringify({ OutInfo: { Class: '/Script/Engine.Actor', Properties: properties } }),
+    }])
+
+    // The outputs section does not fit the budget; the card must still say the
+    // Details are partial instead of silently looking complete.
+    assert.equal(details?.truncated, true)
+    assert.deepEqual(details?.sections.map(section => section.kind), ['inputs'])
+  })
 })
 
 describe('property enrichment', () => {
@@ -496,6 +538,38 @@ describe('level-instance call enrichment', () => {
       Type: 'class(/Script/Engine.StaticMeshComponent)',
       FunctionName: 'GetDisplayName',
     })
+  })
+})
+
+describe('mergeCallDetails', () => {
+  it('adds the reflected Inputs/Outputs around a bespoke section', () => {
+    const custom = {
+      v: 1 as const,
+      sections: [{ kind: 'screenshot' as const, fields: [{ name: 'image', type: 'image/png' }] }],
+    }
+    const defaults = {
+      v: 1 as const,
+      sections: [
+        { kind: 'inputs' as const, fields: [{ name: 'FilePath', type: 'string', displayNameText: { nativeText: 'File Path' } }] },
+        { kind: 'outputs' as const, fields: [{ name: 'OutFilePath', type: 'string' }] },
+      ],
+    }
+    const merged = mergeCallDetails(custom, defaults)
+    assert.deepEqual(merged?.sections.map(section => section.kind), ['inputs', 'screenshot', 'outputs'])
+    assert.equal(merged?.sections[0]?.fields?.[0]?.name, 'FilePath')
+    assert.deepEqual(merged?.sections[0]?.fields?.[0]?.displayNameText, { nativeText: 'File Path' })
+  })
+
+  it('keeps a bespoke Inputs section instead of duplicating the reflected one', () => {
+    const custom = {
+      v: 1 as const,
+      sections: [{ kind: 'inputs' as const, fields: [{ name: 'Target' }] }],
+    }
+    const defaults = {
+      v: 1 as const,
+      sections: [{ kind: 'inputs' as const, fields: [{ name: 'ObjectPath' }] }],
+    }
+    assert.deepEqual(mergeCallDetails(custom, defaults)?.sections.map(section => section.kind), ['inputs'])
   })
 })
 

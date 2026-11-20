@@ -17,6 +17,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ResolvedConfig } from './config.ts'
 import { structTypeOf } from './details.ts'
 import type { ReflectionService } from './kit/reflection.ts'
+import { classTypeFromObjectPath } from './kit/type-derive.ts'
 import type { OperationRecord, SessionGroup } from './records.ts'
 import { readScreenshotDataUrl } from './screenshots.ts'
 import type { UnrealStore } from './store.ts'
@@ -264,6 +265,39 @@ export function registerHistoryChannel(ctx: Context, deps: HistoryChannelDeps): 
           try {
             const cleared = await deps.store.clearSession(sessionId)
             return { ok: true, value: { cleared } }
+          } catch (error: unknown) {
+            return rpcError(error instanceof Error ? error.message : String(error))
+          }
+        }
+        case 'signature': {
+          // On-demand function signature for the card: old records only carried the RC
+          // parameter text, so the panel asks for the reflected names/Types/display names
+          // when it expands a card that predates the default Details sections.
+          const objectPath = stringField(payload, 'objectPath')
+          const functionName = stringField(payload, 'functionName')
+          if (objectPath === undefined || functionName === undefined) {
+            return rpcError('objectPath and functionName are required.')
+          }
+          if (deps.reflection === undefined) return rpcError('Reflection is unavailable.')
+          try {
+            let classType = classTypeFromObjectPath(objectPath)
+            if (classType === undefined) {
+              classType = (await deps.reflection.objectClass(objectPath, signal)).value.classType
+            }
+            const functionView = (await deps.reflection.functionInfo(classType, functionName, signal)).value.function
+            return {
+              ok: true,
+              value: {
+                functionName: functionView.name,
+                returnType: functionView.returnType,
+                parameters: functionView.parameters.map(parameter => ({
+                  name: parameter.name,
+                  type: parameter.type,
+                  direction: parameter.direction,
+                  ...(parameter.displayNameText === undefined ? {} : { displayNameText: parameter.displayNameText }),
+                })),
+              },
+            }
           } catch (error: unknown) {
             return rpcError(error instanceof Error ? error.message : String(error))
           }

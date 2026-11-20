@@ -581,6 +581,61 @@ export async function fetchMembers(
   return members
 }
 
+/** One parameter of a reflected function signature, as the host reports it. */
+export interface SignatureParameterView {
+  /** Parameter name: the key in the call's parameters JSON. */
+  readonly name: string
+  /** Canonical Type string. */
+  readonly type: string
+  /** `input`, `output` or `input-output`. */
+  readonly direction: string
+  /** UE display name text, when the schema reported one. */
+  readonly displayNameText?: unknown
+}
+
+/** One reflected function signature, for cards that predate typed Details. */
+export interface SignatureView {
+  /** Canonical return Type; empty when the function returns nothing. */
+  readonly returnType: string
+  /** Parameters in declaration order. */
+  readonly parameters: readonly SignatureParameterView[]
+}
+
+/**
+ * Fetch one function signature on demand.
+ *
+ * @param caller - the host rpc caller.
+ * @param objectPath - the object whose class owns the function.
+ * @param functionName - the UFunction name.
+ * @param signal - caller cancellation.
+ * @returns the signature, or `undefined` when it cannot be resolved.
+ */
+export async function fetchSignature(
+  caller: RpcCaller,
+  objectPath: string,
+  functionName: string,
+  signal: AbortSignal,
+): Promise<SignatureView | undefined> {
+  const reply = await call(caller, 'signature', { objectPath, functionName }, signal)
+  if (!reply.ok) return undefined
+  const rawParameters = field(reply.value, 'parameters')
+  if (!Array.isArray(rawParameters)) return undefined
+  const parameters: SignatureParameterView[] = []
+  for (const entry of rawParameters.slice(0, 256)) {
+    const name = text(entry, 'name')
+    const type = text(entry, 'type')
+    const direction = text(entry, 'direction')
+    if (name === undefined || type === undefined || direction === undefined) continue
+    parameters.push({
+      name,
+      type,
+      direction,
+      ...(field(entry, 'displayNameText') === undefined ? {} : { displayNameText: field(entry, 'displayNameText') }),
+    })
+  }
+  return { returnType: text(reply.value, 'returnType') ?? '', parameters }
+}
+
 export async function fetchSnapshot(
   caller: RpcCaller,
   request: SnapshotRequest,

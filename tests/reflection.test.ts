@@ -11,6 +11,8 @@ import { EditorAutomationClient } from '../src/kit/client.ts'
 import type { FetchLike } from '../src/kit/client.ts'
 import { KitError } from '../src/kit/errors.ts'
 import { ReflectionService, cacheKey, isTransportFailure, normalizeProcessId } from '../src/kit/reflection.ts'
+import { withRcCapture } from '../src/audit-capture.ts'
+import type { RcCallSnapshot } from '../src/audit-capture.ts'
 import { SchemaCache } from '../src/schema-cache.ts'
 import { innerCall, wrapCallFunctionAnswer } from './support/dispatcher-fixtures.ts'
 
@@ -101,6 +103,25 @@ describe('ReflectionService caching', () => {
     assert.equal(second.cached, true)
     assert.deepEqual(second.value.entries.map(entry => entry.name), ['NoCollision', 'QueryAndPhysics'])
     assert.equal(cache.stats().hits, 1)
+  })
+
+  it('replays the original RC call when the cached answer is reused', async () => {
+    const captured: Captured[] = []
+    const { reflection } = service({ GetEnumInfo: ENUM }, { captured })
+    const calls: RcCallSnapshot[] = []
+
+    await withRcCapture(calls, async () => {
+      await reflection.enumInfo('enum(/Script/Engine.ECollisionEnabled)')
+      const afterMiss = calls.length
+      await reflection.enumInfo('enum(/Script/Engine.ECollisionEnabled)')
+      // The cache hit made no request, but the tool logically made the call: the same
+      // request/answer is replayed so its card keeps the reflected Inputs/Outputs.
+      assert.equal(calls.length, afterMiss + 1)
+      assert.equal(calls.at(-1)?.functionName, 'GetEnumInfo')
+      assert.deepEqual(JSON.parse(calls.at(-1)?.parametersJson ?? '{}'), { Type: 'enum(/Script/Engine.ECollisionEnabled)' })
+      assert.match(calls.at(-1)?.outParametersJson ?? '', /ECollisionEnabled/)
+    })
+    assert.equal(captured.length, 1)
   })
 
   it('keys each operation on its own arguments', async () => {

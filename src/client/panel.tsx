@@ -309,6 +309,7 @@ export function OperationCard(props: {
             tool={operation.tool}
             params={operation.params}
             result={operation.result}
+            rc={operation.rc}
           />
         )}
       </div>
