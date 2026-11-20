@@ -459,6 +459,17 @@
   padding: 7px 10px 0;
 }
 
+/* Small fixed-size label: the card is rendered inside the panel (12px root) and
+   inside the chat transcript (the shell's larger root), so an inherited size made
+   "cached" noticeably bigger in the conversation. */
+.badge {
+  flex: none;
+  font-size: 10px;
+  line-height: 1.4;
+  opacity: 0.55;
+  white-space: nowrap;
+}
+
 /* The call time follows the action title, inline after its last line. */
 .cardTime {
   font-size: 10.5px;
