@@ -149,6 +149,21 @@ export const operationRecordSchema = z.object({
     returnValueJson: z.string().optional(),
     returnType: z.string().optional(),
   }).optional(),
+  /**
+   * Every Remote Control call the tool actually made, in order: request, out
+   * parameters and return value as the Engine saw them. This is the card's raw
+   * data when present; `rc` stays only for records written before this array
+   * existed.
+   */
+  rcCalls: z.array(z.object({
+    objectPath: z.string(),
+    functionName: z.string(),
+    parametersJson: z.string(),
+    outParametersJson: z.string(),
+    returnValueJson: z.string().optional(),
+    returnType: z.string().optional(),
+    errorMessage: z.string().optional(),
+  })).optional(),
   /** Whether the call's reflection answer was served from the schema cache. */
   cached: z.boolean().optional(),
 })

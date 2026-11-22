@@ -26,6 +26,8 @@ export interface RcCallSnapshot {
   readonly returnValueJson?: string | undefined
   /** Canonical return Type. */
   readonly returnType?: string | undefined
+  /** The Engine's failure text, when this logical call failed. */
+  readonly errorMessage?: string | undefined
 }
 
 /** The capture of one tool invocation. */

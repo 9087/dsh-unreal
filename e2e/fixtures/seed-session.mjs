@@ -218,6 +218,93 @@ function editorKitResult(functionName, parameters) {
   }
 }
 
+/**
+ * The single data out-parameter each EditorAutomation function returns.
+ *
+ * The adapter reaches every function through the `CallFunction` dispatcher, whose
+ * answer carries the data out-parameters separately from the result envelope. This
+ * stand-in still writes its fixtures as the old per-function result structs, so the
+ * wrapper below moves `Info`/`ValueJson`/… into the matching out-parameter.
+ */
+const OUT_PARAMETER = {
+  Ping: 'OutValue',
+  GetEditorInfo: 'OutInfo',
+  GetEnumInfo: 'OutInfo',
+  GetStructInfo: 'OutInfo',
+  GetClassInfo: 'OutInfo',
+  GetFunctionInfo: 'OutInfo',
+  GetPropertyType: 'OutInfo',
+  GetObjectClass: 'OutClassType',
+  GetPropertyValue: 'OutValueJson',
+  SetPropertyValue: 'OutWrite',
+  GetRecentLog: 'OutPage',
+  GetBlueprintInfo: 'OutInfo',
+  CaptureScreenshot: 'OutFilePath',
+  ListAssets: 'OutAssets',
+}
+
+/** The data value an old result struct contributes to the dispatcher answer. */
+function dispatcherData(functionName, legacy) {
+  switch (functionName) {
+    case 'GetPropertyType':
+      return { Type: legacy.Type ?? '', DisplayNameText: legacy.DisplayNameText ?? {} }
+    case 'GetObjectClass':
+      return legacy.ClassType ?? ''
+    case 'GetPropertyValue':
+      return legacy.ValueJson ?? ''
+    case 'SetPropertyValue':
+      return {
+        OldValueJson: legacy.OldValueJson ?? '',
+        NewValueJson: legacy.NewValueJson ?? '',
+        DisplayNameText: legacy.DisplayNameText,
+      }
+    case 'CaptureScreenshot':
+      return legacy.FilePath ?? ''
+    case 'ListAssets':
+      return legacy.Assets ?? []
+    default:
+      return legacy.Info ?? stripErrorFields(legacy)
+  }
+}
+
+/** A legacy result struct without its old error-envelope fields. */
+function stripErrorFields(legacy) {
+  const { ErrorCode, ErrorMessage, Hint, ...rest } = legacy
+  return rest
+}
+
+/**
+ * Wrap one legacy per-function result into a `CallFunction` dispatcher answer.
+ *
+ * @param functionName - the inner EditorAutomation function.
+ * @param parameters - the parsed inner parameters.
+ * @returns the dispatcher result struct.
+ */
+function dispatcherAnswer(functionName, parameters) {
+  const legacy = editorKitResult(functionName, parameters)
+  const outName = OUT_PARAMETER[functionName]
+  const answer = (success, data, code = 0, message = '', hint = '') => ({
+    ErrorCode: 0,
+    ErrorMessage: '',
+    Hint: '',
+    ReturnType: '',
+    ReturnValueJson: JSON.stringify(
+      success
+        ? { bSuccess: 'true', ErrorCode: '0', ErrorMessage: '', Hint: '' }
+        : { bSuccess: 'false', ErrorCode: String(code), ErrorMessage: message, Hint: hint },
+    ),
+    OutParametersJson: success && outName !== undefined ? JSON.stringify({ [outName]: data }) : '{}',
+  })
+  if (legacy === null || typeof legacy !== 'object' || Array.isArray(legacy)) {
+    return answer(true, legacy ?? null)
+  }
+  const code = typeof legacy.ErrorCode === 'number' ? legacy.ErrorCode : 0
+  if (code !== 0) {
+    return answer(false, null, code, String(legacy.ErrorMessage ?? ''), String(legacy.Hint ?? ''))
+  }
+  return answer(true, dispatcherData(functionName, legacy))
+}
+
 /** Requests the stand-in endpoint answered, for the marker line. */
 const served = []
 
@@ -247,8 +334,24 @@ async function startStandIn() {
       const functionName = String(body.FunctionName ?? '')
       const parameters = body.Parameters ?? {}
       served.push({ functionName, parameters })
+      let answer
+      if (functionName === 'CallFunction') {
+        const innerFunctionName = String(parameters.FunctionName ?? '')
+        let innerParameters = {}
+        const parametersJson = parameters.ParametersJson
+        if (typeof parametersJson === 'string' && parametersJson.trim() !== '') {
+          try {
+            innerParameters = JSON.parse(parametersJson)
+          } catch {
+            innerParameters = {}
+          }
+        }
+        answer = dispatcherAnswer(innerFunctionName, innerParameters)
+      } else {
+        answer = editorKitResult(functionName, parameters)
+      }
       response.writeHead(200, { 'content-type': 'application/json' })
-      response.end(JSON.stringify({ ReturnValue: editorKitResult(functionName, parameters) }))
+      response.end(JSON.stringify({ ReturnValue: answer }))
     })
   })
   await new Promise((resolve, reject) => {

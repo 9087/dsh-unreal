@@ -15,7 +15,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 
 import type { ResolvedConfig } from './config.ts'
-import { structTypeOf } from './details.ts'
+import { resolveClassType, structTypeOf } from './details.ts'
 import type { ReflectionService } from './kit/reflection.ts'
 import { classTypeFromObjectPath } from './kit/type-derive.ts'
 import type { OperationRecord, SessionGroup } from './records.ts'
@@ -318,6 +318,38 @@ export function registerHistoryChannel(ctx: Context, deps: HistoryChannelDeps): 
               ...(member.displayNameText === undefined ? {} : { displayNameText: member.displayNameText }),
             }))
             return { ok: true, value: { members } }
+          } catch (error: unknown) {
+            return rpcError(error instanceof Error ? error.message : String(error))
+          }
+        }
+        case 'propertyType': {
+          // On-demand property schema for client-built value cards. The record keeps
+          // only the raw value text; the card asks for the property's reflected Type
+          // and DisplayName when it renders, so no derived Details are stored.
+          const objectPath = stringField(payload, 'objectPath')
+          const propertyPath = stringField(payload, 'propertyPath')
+          if (objectPath === undefined || propertyPath === undefined) {
+            return rpcError('objectPath and propertyPath are required.')
+          }
+          if (deps.reflection === undefined) return rpcError('Reflection is unavailable.')
+          try {
+            const classType = await resolveClassType(
+              { reflection: deps.reflection, maxChars: 0, signal },
+              objectPath,
+            )
+            if (classType === undefined) {
+              return rpcError(`The class of "${objectPath}" could not be resolved.`)
+            }
+            const resolved = await deps.reflection.propertyType(classType, propertyPath, signal)
+            return {
+              ok: true,
+              value: {
+                type: resolved.value.type,
+                ...(resolved.value.displayNameText === undefined
+                  ? {}
+                  : { displayNameText: resolved.value.displayNameText }),
+              },
+            }
           } catch (error: unknown) {
             return rpcError(error instanceof Error ? error.message : String(error))
           }

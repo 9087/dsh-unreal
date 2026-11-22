@@ -109,8 +109,8 @@ describe('runningTitle', () => {
 
   it('is the full action title once the target arguments arrived', () => {
     const operation = operationFromBlock(startedBlock({ objectPath: CUBE, propertyPath: 'RelativeLocation' }))
-    assert.equal(runningTitle(operation, enTr), 'Read Cube_1.RelativeLocation')
-    assert.equal(runningTitle(operation, zhTr), '读取 Cube_1.RelativeLocation 属性')
+    assert.equal(runningTitle(operation, enTr), 'Get RelativeLocation: /Game/Maps/Demo.Demo:PersistentLevel.Cube_1')
+    assert.equal(runningTitle(operation, zhTr), '获取 RelativeLocation 属性：/Game/Maps/Demo.Demo:PersistentLevel.Cube_1')
   })
 
   it('falls back to the tool label while a target is still missing', () => {

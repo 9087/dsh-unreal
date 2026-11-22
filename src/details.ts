@@ -618,6 +618,49 @@ export async function buildDefaultCallDetails(
 }
 
 /**
+ * Build a card's Details from the RC calls its tool body actually made.
+ *
+ * The shape follows the call count: one call renders as a normal single-call card
+ * (that function's Inputs/Outputs/Returns); several calls render as the `calls`
+ * list, one nested sub-card per call. No tool-specific shape is involved.
+ *
+ * @param deps - reflection service, budget and cancellation.
+ * @param calls - the captured RC requests, in order.
+ * @returns the Details, or `undefined` when the tool made no call.
+ */
+export async function buildRcCallDetails(
+  deps: DetailsDeps,
+  calls: readonly RcCallSnapshot[],
+): Promise<CallDetails | undefined> {
+  if (calls.length === 0) return undefined
+  if (calls.length === 1) {
+    const call = calls[0]!
+    return await buildCallFunctionDetails(deps, {
+      objectPath: call.objectPath,
+      functionName: call.functionName,
+      parametersJson: call.parametersJson,
+      result: {
+        returnValueJson: call.returnValueJson ?? '',
+        outParametersJson: call.outParametersJson,
+        returnType: call.returnType ?? '',
+      },
+    })
+  }
+  const entries: BatchCallDetailsEntry[] = calls.map((call, index) => ({
+    index,
+    objectPath: call.objectPath,
+    functionName: call.functionName,
+    ok: call.errorMessage === undefined,
+    parametersJson: call.parametersJson,
+    returnValueJson: call.returnValueJson ?? '',
+    outParametersJson: call.outParametersJson,
+    returnType: call.returnType ?? '',
+    errorMessage: call.errorMessage ?? '',
+  }))
+  return boundDetails(await buildBatchCallDetails(deps, entries), deps.maxChars)
+}
+
+/**
  * Combine a tool's own Details sections with the default ones derived from the RC
  * call the tool made.
  *

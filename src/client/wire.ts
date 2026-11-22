@@ -119,6 +119,8 @@ export interface RcCallView {
   readonly returnValueJson?: string | undefined
   /** Canonical return Type. */
   readonly returnType?: string | undefined
+  /** The Engine's failure text, when this logical call failed. */
+  readonly errorMessage?: string | undefined
 }
 
 export interface OperationView {
@@ -164,6 +166,8 @@ export interface OperationView {
   readonly details?: DetailView | undefined
   /** The primary RC call this record wrapped, for the Raw data view. */
   readonly rc?: RcCallView | undefined
+  /** Every RC call the tool actually made, for the Raw data view. */
+  readonly rcCalls?: readonly RcCallView[] | undefined
   /** Whether the call's reflection answer came from the schema cache. */
   readonly cached?: boolean | undefined
 }
@@ -367,7 +371,19 @@ function narrowRc(raw: unknown): RcCallView | undefined {
     outParametersJson,
     returnValueJson: text(raw, 'returnValueJson'),
     returnType: text(raw, 'returnType'),
+    errorMessage: text(raw, 'errorMessage'),
   }
+}
+
+/** Narrow the record's RC call list; `undefined` when absent or unusable. */
+function narrowRcCalls(raw: unknown): RcCallView[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const calls: RcCallView[] = []
+  for (const entry of raw.slice(0, 256)) {
+    const call = narrowRc(entry)
+    if (call !== undefined) calls.push(call)
+  }
+  return calls.length === 0 ? undefined : calls
 }
 
 function narrowOperation(raw: unknown): OperationView | undefined {
@@ -398,6 +414,7 @@ function narrowOperation(raw: unknown): OperationView | undefined {
     resultSummary: text(raw, 'resultSummary'),
     details: narrowDetails(field(raw, 'details')),
     rc: narrowRc(field(raw, 'rc')),
+    rcCalls: narrowRcCalls(field(raw, 'rcCalls')),
     cached: bool(raw, 'cached'),
   }
 }
@@ -579,6 +596,51 @@ export async function fetchMembers(
   if (!reply.ok) return undefined
   const members = narrowMembers(field(reply.value, 'members'))
   return members
+}
+
+/** One property's reflected schema, for client-built value cards. */
+export interface PropertyTypeView {
+  /** Canonical Type string; empty when the host could not resolve it. */
+  readonly type: string
+  /** UE display-name text, when the schema reported one. */
+  readonly displayNameText?: unknown
+}
+
+/**
+ * Fetch one property's reflected schema on demand.
+ *
+ * The record stores only the raw value text, so a value card asks for the property's
+ * Type and DisplayName when it renders instead of relying on stored derived Details.
+ *
+ * @param caller - the host rpc caller.
+ * @param objectPath - the object whose property was read or written.
+ * @param propertyPath - the dotted property path.
+ * @param signal - caller cancellation.
+ * @returns the schema, or `undefined` when it cannot be resolved.
+ */
+/** One property-schema lookup's outcome, carrying the host's reason on failure. */
+export interface PropertyTypeLookup {
+  /** The schema, when the host resolved it. */
+  readonly view?: PropertyTypeView | undefined
+  /** The host's (or transport's) failure message, when it did not. */
+  readonly error?: string | undefined
+}
+
+export async function fetchPropertyType(
+  caller: RpcCaller,
+  objectPath: string,
+  propertyPath: string,
+  signal: AbortSignal,
+): Promise<PropertyTypeLookup> {
+  const reply = await call(caller, 'propertyType', { objectPath, propertyPath }, signal)
+  if (!reply.ok) return { error: reply.message }
+  const display = field(reply.value, 'displayNameText')
+  return {
+    view: {
+      type: text(reply.value, 'type') ?? '',
+      ...(display === undefined ? {} : { displayNameText: display }),
+    },
+  }
 }
 
 /** One parameter of a reflected function signature, as the host reports it. */

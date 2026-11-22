@@ -262,6 +262,8 @@ describe('tool calls and their history rows', () => {
     assert.deepEqual(row.params, {})
     assert.deepEqual(row.result, { pong: true, value: 'pong' })
     assert.equal(row.resultSummary, 'pong')
+    // Ping is a two-call tool: both RC calls are recorded, not just a chosen primary.
+    assert.deepEqual(row.rcCalls?.map(call => call.functionName), ['Ping', 'GetEditorInfo'])
   })
 
   it('unreal_ping rejects a non-pong answer as a failure row', async () => {
@@ -720,6 +722,10 @@ describe('tool calls and their history rows', () => {
     assert.equal('parametersJson' in (value.calls[1] as Record<string, unknown>), false)
     const recordedParams = store.records[0]!.params as { calls: Array<{ parametersJson: string }> }
     assert.equal(recordedParams.calls[1]!.parametersJson, '{"Foo":"1"}')
+    // Both batch entries are recorded as actual RC calls, failures included.
+    assert.deepEqual(store.records[0]!.rcCalls?.map(call => call.functionName), ['Ping', 'GetEditorInfo'])
+    assert.equal(store.records[0]!.rcCalls?.[1]?.parametersJson, '{"Foo":"1"}')
+    assert.equal(store.records[0]!.rcCalls?.[1]?.errorMessage, 'Function was not found.')
     assert.equal(store.records[0]!.ok, true)
   })
 
@@ -758,12 +764,13 @@ describe('tool calls and their history rows', () => {
     const sentPath = String(sent['FilePath'])
     assert.ok(sentPath.endsWith('.png'), `expected a generated PNG path, got ${sentPath}`)
     assert.match(sentPath, /dsh-unreal[\\/]screenshots/, `expected the adapter temp directory, got ${sentPath}`)
-    // The record keeps the same path and a preview section the card renders from the host.
+    // The record keeps the same path; the card is the generic single-RC-call form.
     assert.equal(store.records[0]!.result && (store.records[0]!.result as Record<string, unknown>)['filePath'], filePath)
     const sections = store.records[0]!.details?.sections ?? []
-    // The reflected call inputs lead, the tool's preview follows.
     assert.equal(sections[0]?.kind, 'inputs')
-    assert.ok(sections.some(section => section.kind === 'screenshot'))
+    assert.ok(sections.some(section => section.kind === 'outputs'))
+    assert.equal(sections.some(section => section.kind === 'screenshot'), false)
+    assert.deepEqual(store.records[0]!.rcCalls?.map(call => call.functionName), ['CaptureScreenshot'])
     const inputs = sections.find(section => section.kind === 'inputs')
     assert.deepEqual(
       (inputs?.fields ?? []).map(field => field.name),

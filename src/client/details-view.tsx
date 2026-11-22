@@ -23,16 +23,17 @@ import { createPortal } from 'react-dom'
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 
 import css from './panel.module.css'
+import { FailureNoticeView } from './card-failure.tsx'
+import type { CardFailure } from './card-failure.tsx'
 import { formatValue } from './format.ts'
 import type { MsgKey } from './locales.ts'
 import { typeLabel } from './type-label.ts'
 import { cachedMembers, ensureMembers } from './member-cache.ts'
-import { ensureSignature } from './signature-cache.ts'
-import { fetchScreenshot } from './wire.ts'
-import type { DetailFieldView, DetailMemberTypeView, DetailSectionView, DetailView, OperationView, RcCallView, RpcCaller, SignatureView } from './wire.ts'
+import { fetchPropertyType, fetchScreenshot } from './wire.ts'
+import type { DetailFieldView, DetailMemberTypeView, DetailSectionView, DetailView, OperationView, RpcCaller } from './wire.ts'
 
 /** A message lookup, as the seat's translator provides it. */
-type Tr = (key: MsgKey) => string
+export type Tr = (key: MsgKey) => string
 
 /** Resolve display-name keys for the shell's current culture. */
 export type LocalizeNames = (keys: readonly string[]) => Promise<ReadonlyMap<string, string>>
@@ -76,6 +77,12 @@ function useResizableColumns(columnCount: number): ColumnResizer {
   const [widths, setWidths] = useState<readonly number[] | undefined>(undefined)
   const headerRef = useRef<HTMLDivElement | null>(null)
   const setHeader = (element: HTMLDivElement | null): void => { headerRef.current = element }
+
+  // A column-set change (e.g. the Type column disappearing while a schema loads)
+  // invalidates the measured widths; let the template fall back to equal fractions.
+  useEffect(() => {
+    setWidths(undefined)
+  }, [columnCount])
 
   const startResize = (index: number, event: ReactPointerEvent<HTMLSpanElement>): void => {
     const header = headerRef.current
@@ -278,6 +285,29 @@ function isCompoundValue(value: unknown): boolean {
   return value !== null && typeof value === 'object'
 }
 
+/**
+ * A string that carries nested-JSON text as its value, as a compound value when it parses.
+ *
+ * The wire convention encodes structs/arrays as nested JSON text in string parameters
+ * (e.g. `OutValueJson`), so Details can expand such a row like the struct it holds
+ * instead of printing the whole text on one line. Text that is not a compound JSON
+ * document stays a plain string.
+ *
+ * @param value - one field value.
+ * @returns the parsed compound value, or the original value.
+ */
+function nestedJsonValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return value
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    return parsed !== null && typeof parsed === 'object' ? parsed : value
+  } catch {
+    return value
+  }
+}
+
 /** The entries a compound value offers, bounded to the tree's display limit. */
 function compoundEntries(value: unknown): readonly (readonly [string, unknown])[] {
   if (Array.isArray(value)) return value.slice(0, 64).map((item, index) => [`[${index}]`, item] as const)
@@ -453,7 +483,8 @@ function flattenTreeRows(
     enumName?: string,
     omitted?: boolean,
   ): void => {
-    const entries = isCompoundValue(value) ? compoundEntries(value) : []
+    const shownValue = nestedJsonValue(value)
+    const entries = isCompoundValue(shownValue) ? compoundEntries(shownValue) : []
     const expandable = entries.length > 0
     const open = expandable && expanded.has(path)
     rows.push({
@@ -466,7 +497,7 @@ function flattenTreeRows(
       ...(enumLabelKey === undefined || enumLabelKey === '' ? {} : { enumLabelKey }),
       ...(enumName === undefined ? {} : { enumName }),
       ...(direction === undefined ? {} : { direction }),
-      value,
+      value: shownValue,
       depth,
       expandable,
       expanded: open,
@@ -541,22 +572,34 @@ function flattenTreeRows(
   return rows
 }
 
+/** A Details table column that a caller can hide. */
+export type DetailColumn = 'type' | 'value'
+
 /**
  * A whole Details section as one flattened tree table. Every root field is an
  * ordinary row and every expanded descendant is appended below it, so the
  * columns, direction labels and zebra striping stay aligned at any depth.
+ *
+ * The Type column disappears automatically when every row lacks a Type (no schema
+ * was resolvable), and callers may hide a column explicitly via `hiddenColumns`.
  */
 function FlatTreeSection(props: {
   readonly fields: readonly DetailFieldView[]
   readonly tr: Tr
+  readonly hiddenColumns?: readonly DetailColumn[] | undefined
 }): ReactNode {
   const { fields, tr } = props
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
   const [, bumpRevision] = useState(0)
   const caller = useContext(RpcCallerContext)
-  const resizer = useResizableColumns(3)
   const missing = new Set<string>()
   const rows = flattenTreeRows(fields, expanded, tr, cachedMembers, missing)
+  const hidden = props.hiddenColumns ?? []
+  // An all-empty Type column is noise (the value could not be typed at all), so it
+  // is not rendered; an explicit hiddenColumns entry wins regardless.
+  const showType = !hidden.includes('type') && rows.some(row => row.type !== undefined && row.type !== '')
+  const showValue = !hidden.includes('value')
+  const resizer = useResizableColumns(1 + (showType ? 1 : 0) + (showValue ? 1 : 0))
   const missingKey = [...missing].sort().join('\u0000')
   useEffect(() => {
     if (caller === undefined || missingKey === '') return
@@ -600,13 +643,15 @@ function FlatTreeSection(props: {
         <span className={css.fieldNameCell}>
           <span className={css.treeToggleSpacer} aria-hidden="true" />
           {tr('column.name')}
-          <ColumnResizeHandle index={0} resizer={resizer} />
+          {(showType || showValue) && <ColumnResizeHandle index={0} resizer={resizer} />}
         </span>
-        <span>
-          {tr('column.type')}
-          <ColumnResizeHandle index={1} resizer={resizer} />
-        </span>
-        <span>{tr('column.value')}</span>
+        {showType && (
+          <span>
+            {tr('column.type')}
+            {showValue && <ColumnResizeHandle index={1} resizer={resizer} />}
+          </span>
+        )}
+        {showValue && <span>{tr('column.value')}</span>}
       </div>
       <div className={css.treeFlatRows} data-unreal-tree>
         {rows.map(row => {
@@ -642,12 +687,16 @@ function FlatTreeSection(props: {
                 )}
                 <span className={row.monoName ? css.treeNameText : css.treeLabel} title={row.name}>{displayName}{suffix}</span>
               </span>
-              <span className={css.treeType} title={row.type}>
-                {row.type === undefined ? '' : typeLabel(row.type) ?? row.type}
-              </span>
-              <span className={css.treeValue}>
-                {isCompoundValue(row.value) ? '' : <ScalarValue value={row.value} type={row.type} enumLabel={enumLabel} omitted={row.omitted} tr={tr} />}
-              </span>
+              {showType && (
+                <span className={css.treeType} title={row.type}>
+                  {row.type === undefined ? '' : typeLabel(row.type) ?? row.type}
+                </span>
+              )}
+              {showValue && (
+                <span className={css.treeValue}>
+                  {isCompoundValue(row.value) ? '' : <ScalarValue value={row.value} type={row.type} enumLabel={enumLabel} omitted={row.omitted} tr={tr} />}
+                </span>
+              )}
             </div>
           )
         })}
@@ -675,7 +724,7 @@ function sectionTitle(section: DetailSectionView, tr: Tr): string {
 const screenshotCache = new Map<string, string | undefined>()
 
 /** One screenshot section: the recorded PNG, rendered from the host on demand. */
-function ScreenshotSection(props: {
+export function ScreenshotSection(props: {
   readonly recordId?: string | undefined
   readonly caller?: RpcCaller | undefined
   readonly tr: Tr
@@ -938,7 +987,7 @@ function Section(props: {
   readonly tool?: string | undefined
   readonly result?: unknown
 }): ReactNode {
-  const { section, tr, recordId, caller, tool, result } = props
+  const { section, tr, recordId, caller, result } = props
   const fields = section.fields ?? []
   if (section.kind === 'returns') {
     const envelope = envelopeFailure(fields)
@@ -965,9 +1014,7 @@ function Section(props: {
     )
   }
   if (section.kind === 'calls') {
-    // Only the batch tool has a call layer; records written by older builds may
-    // still carry a calls section, and those must not render one.
-    if (tool !== undefined && tool !== 'unreal_call_functions') return null
+    // The calls list is the generic multi-RC-call card shape; no tool exemption.
     return (
       <div className={css.detailSection} data-unreal-section="calls">
         <div className={css.sectionTitle}>{sectionTitle(section, tr)}</div>
@@ -1055,79 +1102,15 @@ function fallbackSections(
 }
 
 /**
- * Parse one record's nested-JSON text into a field record; empty when unreadable.
- *
- * @param json - the raw text stored on the record.
- * @returns the object, or an empty record.
- */
-function rcRecord(json: string | undefined): Record<string, unknown> {
-  if (json === undefined || json.trim() === '') return {}
-  try {
-    const value = JSON.parse(json) as unknown
-    return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
-  } catch {
-    return {}
-  }
-}
-
-/**
- * Build Inputs/Outputs from one record's primary RC call.
- *
- * The signature (fetched from the host when available) supplies the Engine's
- * names, Types, directions and display names; without it the raw RC keys still
- * beat the tool's own camelCase arguments, so the card names the call correctly.
- *
- * @param rc - the record's primary RC call.
- * @param signature - the reflected signature, when the host resolved it.
- * @returns the sections, each present only when it has fields.
- */
-function rcFallbackSections(
-  rc: RcCallView,
-  signature: SignatureView | undefined,
-): { readonly inputs: DetailSectionView[]; readonly outputs: DetailSectionView[] } {
-  const provided = rcRecord(rc.parametersJson)
-  const outProvided = rcRecord(rc.outParametersJson)
-  const parameters = signature?.parameters ?? []
-  const consumed = new Set<string>()
-  const inputs: DetailFieldView[] = []
-  for (const parameter of parameters) {
-    if (parameter.direction === 'output') continue
-    const has = Object.prototype.hasOwnProperty.call(provided, parameter.name)
-    consumed.add(parameter.name)
-    inputs.push({
-      name: parameter.name,
-      ...(has ? { value: provided[parameter.name] } : { omitted: true }),
-      ...(parameter.type === '' ? {} : { type: parameter.type }),
-      direction: 'input',
-      ...(parameter.displayNameText === undefined ? {} : { displayNameText: parameter.displayNameText }),
-    })
-  }
-  for (const [name, value] of Object.entries(provided)) {
-    if (consumed.has(name)) continue
-    inputs.push({ name, direction: 'input', value })
-  }
-  const outputs: DetailFieldView[] = []
-  for (const [name, value] of Object.entries(outProvided)) {
-    const parameter = parameters.find(candidate => candidate.name === name && candidate.direction !== 'input')
-    outputs.push({
-      name,
-      direction: parameter?.direction ?? 'output',
-      ...(parameter === undefined || parameter.type === '' ? {} : { type: parameter.type }),
-      ...(parameter?.displayNameText === undefined ? {} : { displayNameText: parameter.displayNameText }),
-      value,
-    })
-  }
-  return {
-    inputs: inputs.length === 0 ? [] : [{ kind: 'inputs', fields: inputs }],
-    outputs: outputs.length === 0 ? [] : [{ kind: 'outputs', fields: outputs }],
-  }
-}
-
-/**
  * The enriched Details view of one record.
  *
- * @param props - the record's typed Details, its raw parameters/result and primary
- *   RC call for the fallback sections, and the panel context.
+ * The host builds the sections from the RC calls the tool actually made: one call
+ * is a normal single-call card, several calls are a `calls` list. This component
+ * only renders them (plus the legacy param/result fallback for records written
+ * before Details existed); it applies no tool-specific shape.
+ *
+ * @param props - the record's typed Details, its raw parameters/result for legacy
+ *   records, and the panel context.
  * @returns the sections, or nothing when the record has no displayable data.
  */
 export function DetailsView(props: {
@@ -1138,43 +1121,24 @@ export function DetailsView(props: {
   readonly tool?: string | undefined
   readonly params?: unknown
   readonly result?: unknown
-  readonly rc?: RcCallView | undefined
+  /**
+   * The owner's failure notice, shown after the body instead of above it. Supplied by
+   * the card; the legacy callers (transcript during a run) leave it undefined.
+   */
+  readonly failure?: CardFailure | undefined
 }): ReactNode {
   const base = props.details === undefined
     ? []
     : withLegacyCalls(props.details.sections, props.tool, props.result)
-  const baseKinds = new Set(base.map(section => section.kind))
-  const missingInputs = !baseKinds.has('inputs') && !baseKinds.has('calls')
-  const renderedOutputs = baseKinds.has('outputs') || baseKinds.has('returns') || baseKinds.has('screenshot')
-    || baseKinds.has('calls') || baseKinds.has('change') || baseKinds.has('value') || baseKinds.has('type')
-  const missingOutputs = !renderedOutputs
-  const rc = props.rc
-  const usesRcFallback = rc !== undefined && (missingInputs || missingOutputs)
-  const [rcFallback, setRcFallback] = useState<{
-    readonly inputs: DetailSectionView[]
-    readonly outputs: DetailSectionView[]
-  } | undefined>(undefined)
-  useEffect(() => {
-    if (rc === undefined || props.caller === undefined || (!missingInputs && !missingOutputs)) return
-    // The raw RC keys render immediately; the signature upgrades them to reflected
-    // Types and display names once the host answers (cached per function).
-    setRcFallback(rcFallbackSections(rc, undefined))
-    const controller = new AbortController()
-    let alive = true
-    void ensureSignature(props.caller, rc.objectPath, rc.functionName, controller.signal)
-      .then(signature => { if (alive) setRcFallback(rcFallbackSections(rc, signature)) })
-      .catch(() => {})
-    return () => { alive = false; controller.abort() }
-  }, [props.caller, rc?.objectPath, rc?.functionName, missingInputs, missingOutputs])
-  const fallback = usesRcFallback && rc !== undefined
-    ? (rcFallback ?? rcFallbackSections(rc, undefined))
-    : fallbackSections(base, props.params, props.result)
-  const sections = [
-    ...(missingInputs ? fallback.inputs : []),
-    ...base,
-    ...(missingOutputs ? fallback.outputs : []),
-  ]
-  if (sections.length === 0) return undefined
+  // A failed envelope is already summarised by the failure notice below the body;
+  // rendering it again as a Returns row would print the same error twice.
+  const visibleBase = props.failure === undefined
+    ? base
+    : base.filter(section =>
+        !(section.kind === 'returns' && envelopeFailure(section.fields ?? []) !== undefined))
+  const { inputs, outputs } = fallbackSections(visibleBase, props.params, props.result)
+  const sections = [...inputs, ...visibleBase, ...outputs]
+  if (sections.length === 0 && props.failure === undefined) return undefined
   return (
     <RpcCallerContext.Provider value={props.caller}>
       <div className={css.detailsView} data-unreal-details-view>
@@ -1189,12 +1153,357 @@ export function DetailsView(props: {
             result={props.result}
           />
         ))}
+        {props.failure !== undefined && <FailureNoticeView failure={props.failure} tr={props.tr} />}
       </div>
     </RpcCallerContext.Provider>
   )
 }
 
-/** A rendered cell of a reflection info table. */
+/**
+ * The sections host recorded for one RC call.
+ *
+ * A single-call record keeps them at the top level; a multi-call record keeps one
+ * entry per call inside its `calls` section. Custom cards use this to render only
+ * the call they care about without knowing the record shape.
+ *
+ * @param operation - the recorded call.
+ * @param callIndex - zero-based index into the record's RC calls.
+ * @returns the sections for that call, empty when the record cannot supply them.
+ */
+function sectionsForCall(operation: OperationView, callIndex: number): readonly DetailSectionView[] {
+  const sections = operation.details?.sections ?? []
+  const callsSection = sections.find(section => section.kind === 'calls')
+  if (callsSection !== undefined) {
+    const value = callsSection.fields?.[callIndex]?.value
+    if (isRecord(value) && Array.isArray(value['sections'])) {
+      return value['sections'] as DetailSectionView[]
+    }
+    return []
+  }
+  const callCount = operation.rcCalls?.length ?? (operation.rc === undefined ? 0 : 1)
+  return callCount > 1 ? [] : sections
+}
+
+/**
+ * One RC call's details, as a reusable building block for custom cards.
+ *
+ * @param props - the record, which call to show, optional section kinds and context.
+ * @returns that call's typed sections, or nothing when it has none.
+ */
+export function RcCallDetails(props: {
+  readonly operation: OperationView
+  readonly callIndex: number
+  readonly kinds?: readonly string[] | undefined
+  readonly tr: Tr
+  readonly caller?: RpcCaller | undefined
+  readonly recordId?: string | undefined
+}): ReactNode {
+  const sections = sectionsForCall(props.operation, props.callIndex)
+    .filter(section => props.kinds === undefined || props.kinds.includes(section.kind))
+  if (sections.length === 0) return undefined
+  return (
+    <div className={css.detailsView} data-unreal-rc-details={String(props.callIndex)}>
+      {sections.map((section, index) => (
+        <Section
+          key={`${section.kind}-${String(index)}`}
+          section={section}
+          tr={props.tr}
+          caller={props.caller}
+          recordId={props.recordId}
+        />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * The multi-call list (`Calls` sub-cards), optionally only some of the calls.
+ *
+ * @param props - the record, the call indices to render and context.
+ * @returns the nested sub-cards, or nothing when the record has no calls list.
+ */
+export function CallsDetails(props: {
+  readonly operation: OperationView
+  readonly calls?: readonly number[] | undefined
+  readonly tr: Tr
+  readonly caller?: RpcCaller | undefined
+  readonly recordId?: string | undefined
+}): ReactNode {
+  const section = props.operation.details?.sections.find(candidate => candidate.kind === 'calls')
+  if (section === undefined) return undefined
+  const all = section.fields ?? []
+  const fields = props.calls === undefined
+    ? all
+    : props.calls.map(index => all[index]).filter((field): field is DetailFieldView => field !== undefined)
+  if (fields.length === 0) return undefined
+  return (
+    <Section
+      section={{ ...section, fields }}
+      tr={props.tr}
+      caller={props.caller}
+      recordId={props.recordId}
+    />
+  )
+}
+
+/**
+ * A plain label/value list, for custom cards whose content is a few fields.
+ *
+ * @param props - the rows to show.
+ * @returns the list.
+ */
+export function KeyValueRows(props: { readonly rows: readonly { readonly label: string; readonly value: string }[] }): ReactNode {
+  if (props.rows.length === 0) return undefined
+  return (
+    <div className={css.customKv}>
+      {props.rows.map(row => (
+        <div className={css.customKvRow} key={row.label}>
+          <span className={css.customKvLabel}>{row.label}</span>
+          <span className={css.customKvValue}>{row.value}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** The struct Type inside a `struct(...)` Type string. */
+function structValueType(type: string): string | undefined {
+  const match = /^struct\((.+)\)$/.exec(type.trim())
+  return match?.[1]
+}
+
+/**
+ * The root row for a typed value.
+ *
+ * The value is always rendered as one row carrying its own Type — a struct keeps
+ * itself as the root (`RelativeLocation`, type `struct(...)`) and expands into its
+ * members through the normal Details tree, instead of flattening members to the top
+ * level. The same row also covers scalars: `bHidden` + `bool` renders as a checkbox.
+ *
+ * @param type - the value's canonical Type.
+ * @param value - the already-parsed value.
+ * @param name - the row name.
+ * @param displayNameText - UE display-name text for the row.
+ * @param members - the Type's members, when it is a resolved struct.
+ * @returns the single root row.
+ */
+function typedValueRows(
+  type: string,
+  value: unknown,
+  name: string,
+  displayNameText: unknown,
+  members: readonly DetailMemberTypeView[] | undefined,
+): DetailFieldView[] {
+  return [{
+    name,
+    ...(displayNameText === undefined ? {} : { displayNameText }),
+    ...(type === '' ? {} : { type }),
+    ...(members === undefined ? {} : { members }),
+    value,
+  }]
+}
+
+/**
+ * One typed value as a Details table.
+ *
+ * The caller supplies only a Type and a decoded value; expansion of nested structs,
+ * containers, member labels and per-Type value rendering all happen in the shared
+ * Details tree below (the same code path a record's Inputs/Outputs sections use).
+ *
+ * @param props - the Type, decoded value, optional row name/DisplayName label.
+ * @returns the value section.
+ */
+export function TypedValueSection(props: {
+  readonly type: string
+  readonly value: unknown
+  readonly name?: string | undefined
+  readonly displayNameText?: unknown
+  readonly members?: readonly DetailMemberTypeView[] | undefined
+  readonly label?: string | undefined
+  /** A short note under the table (e.g. the schema could not be fetched). */
+  readonly note?: string | undefined
+  readonly tr: Tr
+}): ReactNode {
+  const fields = typedValueRows(
+    props.type,
+    props.value,
+    props.name ?? 'Value',
+    props.displayNameText,
+    props.members,
+  )
+  return (
+    <div className={css.detailSection} data-unreal-typed-value>
+      {props.label !== undefined && <div className={css.sectionTitle}>{props.label}</div>}
+      <FlatTreeSection fields={fields} tr={props.tr} />
+      {props.note !== undefined && <div className={css.detailNote}>{props.note}</div>}
+    </div>
+  )
+}
+
+/**
+ * One property value as typed Details rows, with its schema fetched on demand.
+ *
+ * The record keeps only the raw value text; this component asks the host for the
+ * property's Type and DisplayName (and a struct Type's members) when it renders, then
+ * hands both to `TypedValueSection` — so names, Type cells and value formatting come
+ * from UE's reflection and the normal Details tree, not from guessing the JSON shape.
+ *
+ * @param props - the property identity, raw value text, optional label and context.
+ * @returns the value section.
+ */
+/** The property schema one value/change card renders from. */
+interface PropertySchemaState {
+  readonly type: string
+  readonly displayNameText?: unknown
+  readonly members?: readonly DetailMemberTypeView[] | undefined
+}
+
+/**
+ * Fetch one property's schema once for a card (Type, DisplayName, struct members).
+ *
+ * @param props - the property identity, optional caller and translator.
+ * @returns the schema and the host's failure reason when it could not be resolved.
+ */
+function usePropertySchema(props: {
+  readonly objectPath: string
+  readonly propertyPath: string
+  readonly caller?: RpcCaller | undefined
+  readonly tr: Tr
+}): { readonly schema: PropertySchemaState | undefined; readonly error: string | undefined } {
+  const [schema, setSchema] = useState<PropertySchemaState | undefined>(undefined)
+  const [error, setError] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    const caller = props.caller
+    if (caller === undefined) {
+      setError(props.tr('custom.schemaNoCaller'))
+      return undefined
+    }
+    const controller = new AbortController()
+    let alive = true
+    void (async () => {
+      try {
+        const property = await fetchPropertyType(caller, props.objectPath, props.propertyPath, controller.signal)
+        if (!alive) return
+        if (property.view === undefined) {
+          setError(property.error ?? props.tr('custom.schemaUnavailableReason'))
+          return
+        }
+        const view = property.view
+        const struct = structValueType(view.type)
+        // `members` takes the canonical Type (`struct(...)`), not the bare struct path.
+        const members = struct === undefined ? undefined : await ensureMembers(caller, view.type, controller.signal)
+        if (!alive) return
+        setSchema({
+          type: view.type,
+          ...(view.displayNameText === undefined ? {} : { displayNameText: view.displayNameText }),
+          ...(members === undefined ? {} : { members }),
+        })
+      } catch (error: unknown) {
+        // A schema miss leaves the rows untyped; the value itself still renders.
+        if (alive) setError(error instanceof Error ? error.message : String(error))
+      }
+    })()
+    return () => {
+      alive = false
+      controller.abort()
+    }
+  }, [props.caller, props.objectPath, props.propertyPath])
+  return { schema, error }
+}
+
+/**
+ * The localized one-line note for a schema that could not be fetched.
+ *
+ * @param error - the host's reason.
+ * @param tr - message lookup.
+ * @returns the note text, or `undefined` when the schema resolved.
+ */
+function schemaNote(error: string | undefined, tr: Tr): string | undefined {
+  return error === undefined ? undefined : tr('custom.schemaUnavailable').replace('{reason}', error)
+}
+
+/**
+ * One property value as typed Details rows, with its schema fetched on demand.
+ *
+ * The record keeps only the raw value text; this component asks the host for the
+ * property's Type and DisplayName (and a struct Type's members) when it renders, then
+ * hands both to `TypedValueSection` — so names, Type cells and value formatting come
+ * from UE's reflection and the normal Details tree, not from guessing the JSON shape.
+ *
+ * @param props - the property identity, raw value text, optional label and context.
+ * @returns the value section.
+ */
+export function PropertyValueSection(props: {
+  readonly objectPath: string
+  readonly propertyPath: string
+  readonly valueJson: string
+  readonly label?: string | undefined
+  readonly tr: Tr
+  readonly caller?: RpcCaller | undefined
+}): ReactNode {
+  const { schema, error } = usePropertySchema(props)
+  return (
+    <TypedValueSection
+      type={schema?.type ?? ''}
+      value={parseCallText(props.valueJson)}
+      name={props.propertyPath}
+      displayNameText={schema?.displayNameText}
+      members={schema?.members}
+      label={props.label}
+      tr={props.tr}
+      note={schemaNote(error, props.tr)}
+    />
+  )
+}
+
+/**
+ * The before/after pair of one property write, sharing one schema fetch and one note.
+ *
+ * Both values are typed the same way; the schema-unavailable note is printed once,
+ * after the pair, instead of repeating under each side.
+ *
+ * @param props - the property identity, both raw values and context.
+ * @returns the two value sections and (when needed) the single note.
+ */
+export function PropertyChangeSection(props: {
+  readonly objectPath: string
+  readonly propertyPath: string
+  readonly oldValueJson: string
+  readonly newValueJson: string
+  readonly oldLabel: string
+  readonly newLabel: string
+  readonly tr: Tr
+  readonly caller?: RpcCaller | undefined
+}): ReactNode {
+  const { schema, error } = usePropertySchema(props)
+  return (
+    <>
+      <TypedValueSection
+        type={schema?.type ?? ''}
+        value={parseCallText(props.oldValueJson)}
+        name={props.propertyPath}
+        displayNameText={schema?.displayNameText}
+        members={schema?.members}
+        label={props.oldLabel}
+        tr={props.tr}
+      />
+      <TypedValueSection
+        type={schema?.type ?? ''}
+        value={parseCallText(props.newValueJson)}
+        name={props.propertyPath}
+        displayNameText={schema?.displayNameText}
+        members={schema?.members}
+        label={props.newLabel}
+        tr={props.tr}
+      />
+      {error !== undefined && <div className={css.detailNote}>{schemaNote(error, props.tr)}</div>}
+    </>
+  )
+}
+
+/**
+ * A rendered cell of a reflection info table.
+ */
 interface InfoCell {
   readonly text: ReactNode
   readonly className?: string | undefined
@@ -1493,3 +1802,4 @@ export function InfoResultView(props: { readonly operation: OperationView; reado
   )
 }
 
+export { DetailsView as DefaultDetailsView }

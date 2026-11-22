@@ -17,8 +17,10 @@ import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 import css from './panel.module.css'
-import { actionTitle, failureLine } from './card-title.ts'
-import { DetailsView, LocalizedNamesProvider, cultureFromText } from './details-view.tsx'
+import { CustomCardBody, resolveCardCustomization } from './card-customizations.tsx'
+import { actionTitle } from './card-title.ts'
+import { cardFailure } from './card-failure.tsx'
+import { CallsDetails, DetailsView, KeyValueRows, LocalizedNamesProvider, RcCallDetails, cultureFromText } from './details-view.tsx'
 import type { LocalizeNames } from './details-view.tsx'
 import { localize } from './locales.ts'
 import type { MsgKey, Translator } from './locales.ts'
@@ -149,12 +151,17 @@ function searchableText(operation: OperationView, tr: Lookup): string {
 }
 
 /** The card's three-dot menu: one radio item toggles the Raw data disclosure. */
+/** The three body views a finished card can show. */
+type CardView = 'custom' | 'details' | 'raw'
+
+/** The card's three-dot menu: one display-type group with its radio items. */
 function CardMenu(props: {
-  readonly rawOpen: boolean
-  readonly onToggleRaw: () => void
+  readonly view: CardView
+  readonly hasCustom: boolean
+  readonly onSelectView: (view: CardView) => void
   readonly tr: (key: MsgKey) => string
 }): ReactNode {
-  const { rawOpen, onToggleRaw, tr } = props
+  const { view, hasCustom, onSelectView, tr } = props
   const [open, setOpen] = useState(false)
   const [anchor, setAnchor] = useState<{ top: number; right: number } | undefined>(undefined)
   const hostRef = useRef<HTMLDivElement>(null)
@@ -165,7 +172,7 @@ function CardMenu(props: {
     const button = buttonRef.current
     if (button === null) return
     const rect = button.getBoundingClientRect()
-    const estimatedHeight = 44
+    const estimatedHeight = 132
     const below = rect.bottom + 4
     const top = below + estimatedHeight > window.innerHeight && rect.top > estimatedHeight
       ? rect.top - estimatedHeight - 4
@@ -223,18 +230,49 @@ function CardMenu(props: {
           data-unreal-card-menu-list
           style={{ position: 'fixed', top: anchor.top, right: anchor.right }}
         >
+          <div className={css.cardMenuGroupLabel} data-unreal-menu-view>{tr('menu.view')}</div>
+          {hasCustom && (
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={view === 'custom'}
+              className={`${css.cardMenuItem} ${css.cardMenuItemNested}`}
+              data-unreal-menu-custom
+              onClick={() => {
+                setOpen(false)
+                onSelectView('custom')
+              }}
+            >
+              <span className={css.cardMenuRadio} aria-hidden>{view === 'custom' ? '●' : '○'}</span>
+              <span>{tr('view.custom')}</span>
+            </button>
+          )}
           <button
             type="button"
             role="menuitemradio"
-            aria-checked={rawOpen}
-            className={css.cardMenuItem}
+            aria-checked={view === 'details'}
+            className={`${css.cardMenuItem} ${css.cardMenuItemNested}`}
+            data-unreal-menu-details
+            onClick={() => {
+              setOpen(false)
+              onSelectView('details')
+            }}
+          >
+            <span className={css.cardMenuRadio} aria-hidden>{view === 'details' ? '●' : '○'}</span>
+            <span>{tr('view.details')}</span>
+          </button>
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={view === 'raw'}
+            className={`${css.cardMenuItem} ${css.cardMenuItemNested}`}
             data-unreal-menu-raw
             onClick={() => {
               setOpen(false)
-              onToggleRaw()
+              onSelectView('raw')
             }}
           >
-            <span className={css.cardMenuRadio} aria-hidden>{rawOpen ? '●' : '○'}</span>
+            <span className={css.cardMenuRadio} aria-hidden>{view === 'raw' ? '●' : '○'}</span>
             <span>{tr('raw.title')}</span>
           </button>
         </div>,
@@ -269,9 +307,30 @@ export function OperationCard(props: {
   readonly caller?: RpcCaller | undefined
 }): ReactNode {
   const { operation, now, tr, as = 'li', caller } = props
-  const [rawOpen, setRawOpen] = useState(false)
+  const customization = resolveCardCustomization(operation)
+  const hasCustom = customization !== undefined
+  const [view, setView] = useState<CardView>(() => hasCustom ? 'custom' : 'details')
+  // A card instance can be reused for another record (e.g. transcript re-render):
+  // reset to that record's default view rather than keeping the old selection.
+  useEffect(() => {
+    setView(resolveCardCustomization(operation) !== undefined ? 'custom' : 'details')
+  }, [operation.id])
+  const cardComponents = useMemo(() => ({
+    DefaultDetailsView: DetailsView,
+    RcCallDetails,
+    CallsDetails,
+    KeyValueRows,
+  }), [])
   const title = actionTitle(operation, tr)
-  const failure = failureLine(operation, tr)
+  const failure = cardFailure(operation, tr)
+  let customContent: ReactNode
+  if (view === 'custom' && customization !== undefined) {
+    try {
+      customContent = customization.render({ operation, tr, caller, components: cardComponents })
+    } catch {
+      customContent = undefined
+    }
+  }
   const content = (
     <>
       <div className={css.cardHead}>
@@ -290,16 +349,16 @@ export function OperationCard(props: {
         {operation.cached === true && (
           <span className={css.badge} data-unreal-cached title={tr('row.cached')}>{tr('row.cached')}</span>
         )}
-        <CardMenu rawOpen={rawOpen} onToggleRaw={() => { setRawOpen(value => !value) }} tr={tr} />
+        <CardMenu view={view} hasCustom={hasCustom} onSelectView={setView} tr={tr} />
       </div>
-      {!rawOpen && !operation.ok && failure !== undefined && (
-        <div className={css.cardError} data-unreal-error-line>{failure}</div>
-      )}
-      <div className={css.cardBody} data-unreal-card-body data-unreal-raw-mode={rawOpen ? 'true' : undefined}>
-        {/* Raw data is a view mode, not an extra block: selecting it replaces every
-            formatted section (tables, sub-cards, error line) with the raw payloads. */}
-        {rawOpen ? (
+      <div className={css.cardBody} data-unreal-card-body data-unreal-raw-mode={view === 'raw' ? 'true' : undefined}>
+        {/* Views are alternatives, not stacked blocks: Custom composes its own body
+            (usually from the shared Details building blocks), Details is the default
+            generic body, and Raw data shows every captured RC call as it happened. */}
+        {view === 'raw' ? (
           <RawDataDisclosure operation={operation} tr={tr} open />
+        ) : view === 'custom' && customization !== undefined ? (
+          <CustomCardBody operation={operation} tr={tr}>{customContent}</CustomCardBody>
         ) : (
           <DetailsView
             details={operation.details}
@@ -309,7 +368,7 @@ export function OperationCard(props: {
             tool={operation.tool}
             params={operation.params}
             result={operation.result}
-            rc={operation.rc}
+            failure={failure}
           />
         )}
       </div>

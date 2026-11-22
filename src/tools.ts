@@ -26,7 +26,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 
 import type { ResolvedConfig } from './config.ts'
 import { captureRcCall, withRcCapture, type RcCallSnapshot } from './audit-capture.ts'
-import { buildBatchCallDetails, buildCallFunctionDetails, buildDefaultCallDetails, buildPropertyValueDetails, buildPropertyWriteDetails, buildScreenshotDetails, mergeCallDetails } from './details.ts'
+import { buildRcCallDetails } from './details.ts'
 import type { CallDetails, DetailsDeps } from './details.ts'
 import { EditorAutomationClient, assertKitResult } from './kit/client.ts'
 import { KitError, asKitError } from './kit/errors.ts'
@@ -232,37 +232,11 @@ interface Audited<T> {
   readonly resultSummary?: string | undefined
 }
 
-/** The outcome of one tool body, as the Details builder sees it. */
-interface AuditedOutcome {
-  /** Present on success. */
-  readonly value?: unknown
-  /** Present on failure. */
-  readonly error?: KitError | undefined
-}
-
 /** Static identity of the call being recorded. */
 interface AuditMeta {
   readonly tool: string
   /** The parsed tool arguments, kept as a bounded snapshot. */
   readonly params?: unknown
-  /**
-   * The UFunction this tool is *about*, when its body also makes auxiliary RC calls
-   * (e.g. `unreal_ping` also reads the editor identity). Only needed to name the card's
-   * Raw-data call among several; a tool that makes exactly one call needs no entry.
-   */
-  readonly primaryFunction?: string | undefined
-  /**
-   * Set when the bespoke Details builder fully describes the call's own Inputs/Outputs
-   * (e.g. `unreal_call_function` shows the *target* signature, not the dispatcher request),
-   * so the reflected default sections would only duplicate dispatcher-level data.
-   */
-  readonly skipDefaultDetails?: boolean | undefined
-  /**
-   * Typed-enrichment builder, run after the body so it can see the result too.
-   * Best-effort: a builder that throws or times out only costs this record's
-   * Details, never the call itself.
-   */
-  readonly details?: ((outcome: AuditedOutcome) => Promise<CallDetails | undefined>) | undefined
 }
 
 /**
@@ -288,46 +262,14 @@ async function audited<T>(
   const started = deps.now()
   const trail: AuditTrail = {}
   const rcCalls: RcCallSnapshot[] = []
-  /**
-   * The one RC call the card's Raw data view shows.
-   *
-   * A tool that makes exactly one call is unambiguous. A tool that also makes auxiliary
-   * calls names its own operation in `primaryFunction`, so the main request wins over an
-   * incidental lookup (`Ping` over `GetEditorInfo`, `SaveAssets` over `GetDirtyAssets`).
-   * Nothing is guessed from call order; `unreal_call_function` is excluded because its
-   * card is built from a different details path.
-   */
-  const primaryRc = (): RcCallSnapshot | undefined => {
-    if (meta.tool === 'unreal_call_function') return undefined
-    if (meta.primaryFunction !== undefined) {
-      const match = rcCalls.find(call => call.functionName === meta.primaryFunction)
-      if (match === undefined && rcCalls.length > 0) {
-        deps.warn?.(
-          `dsh-unreal: tool "${meta.tool}" declares primaryFunction "${meta.primaryFunction}" but made no such RC call ` +
-          `(${rcCalls.map(call => call.functionName).join(', ')}); the card's Raw data falls back to the tool payloads.`,
-        )
-      }
-      return match
-    }
-    if (rcCalls.length > 1) {
-      deps.warn?.(
-        `dsh-unreal: tool "${meta.tool}" issued ${String(rcCalls.length)} RC calls ` +
-        `(${rcCalls.map(call => call.functionName).join(', ')}) without a primaryFunction; ` +
-        'add primaryFunction to its audit meta so the card\'s Raw data names the main call.',
-      )
-      return undefined
-    }
-    return rcCalls[0]
-  }
   try {
     const outcome = await withRcCapture(rcCalls, () => run(trail))
-    const details = await enrich(deps, exec, meta, { value: outcome.value }, rcCalls)
-    const rc = primaryRc()
+    const details = await enrich(deps, exec, rcCalls)
     await record(deps, exec, meta, {
       ok: true,
       durationMs: deps.now() - started,
       trail,
-      ...(rc === undefined ? {} : { rc }),
+      ...(rcCalls.length === 0 ? {} : { rcCalls }),
       ...(details === undefined ? {} : { details }),
       ...(outcome.resultSummary === undefined ? {} : { resultSummary: outcome.resultSummary }),
       result: toJson(outcome.value),
@@ -335,8 +277,7 @@ async function audited<T>(
     return outcome.value
   } catch (error: unknown) {
     const failure = asKitError(error)
-    const details = await enrich(deps, exec, meta, { error: failure }, rcCalls)
-    const rc = primaryRc()
+    const details = await enrich(deps, exec, rcCalls)
     await record(deps, exec, meta, {
       ok: false,
       durationMs: deps.now() - started,
@@ -345,7 +286,7 @@ async function audited<T>(
       // in below, where it costs the record nothing.
       errorMessage: recordedErrorMessage(failure),
       ...(failure.hint === undefined ? {} : { errorHint: failure.hint }),
-      ...(rc === undefined ? {} : { rc }),
+      ...(rcCalls.length === 0 ? {} : { rcCalls }),
       ...(details === undefined ? {} : { details }),
       trail,
     })
@@ -368,32 +309,30 @@ async function audited<T>(
  * @param outcome - what the body produced.
  * @returns the details, or `undefined` when none could be built in time.
  */
+/**
+ * Build the card's Details from the RC calls the body made.
+ *
+ * No tool contributes its own shape any more: one call renders as a single-call
+ * card, several render as the `calls` list. Best-effort — a builder that throws
+ * or times out only costs this record's Details, never the call itself.
+ *
+ * @param deps - tool dependencies.
+ * @param exec - the tool run context, for cancellation.
+ * @param rcCalls - the RC requests the body actually made.
+ * @returns the Details, or `undefined` when there is nothing to build.
+ */
 async function enrich(
   deps: ToolDeps,
   exec: RunContext,
-  meta: AuditMeta,
-  outcome: AuditedOutcome,
   rcCalls: readonly RcCallSnapshot[],
 ): Promise<CallDetails | undefined> {
-  if (outcome.error !== undefined && outcome.error.code.startsWith('rc/')) return undefined
-  // Both halves are wanted even when a bespoke builder exists: the tool contributes
-  // what only it knows (screenshot preview, property before/after), the default builder
-  // contributes the reflected Inputs/Outputs of the RC call it actually made.
-  const wantsDefaults = meta.skipDefaultDetails !== true && rcCalls.length > 0
-  if (meta.details === undefined && !wantsDefaults) return undefined
+  if (rcCalls.length === 0) return undefined
   let timer: NodeJS.Timeout | undefined
   try {
     const timeout = new Promise<undefined>((settle) => {
       timer = setTimeout(() => { settle(undefined) }, deps.config.enrichmentTimeoutMs)
     })
-    const build = async (): Promise<CallDetails | undefined> => {
-      const [custom, defaults] = await Promise.all([
-        meta.details === undefined ? undefined : meta.details(outcome),
-        wantsDefaults ? buildDefaultCallDetails(detailsDeps(deps, exec), rcCalls) : undefined,
-      ])
-      return mergeCallDetails(custom, defaults)
-    }
-    return await Promise.race([build(), timeout])
+    return await Promise.race([buildRcCallDetails(detailsDeps(deps, exec), rcCalls), timeout])
   } catch {
     return undefined
   } finally {
@@ -467,7 +406,7 @@ async function record(
     trail?: AuditTrail | undefined
     result?: JsonValue | undefined
     details?: CallDetails | undefined
-    rc?: RcCallSnapshot | undefined
+    rcCalls?: readonly RcCallSnapshot[] | undefined
   },
 ): Promise<void> {
   const time = deps.now()
@@ -494,7 +433,7 @@ async function record(
     ...(trail?.cacheHit === undefined ? {} : { cached: trail.cacheHit }),
     ...(meta.params === undefined ? {} : { params: boundSnapshot(meta.params, deps.config.snapshotMaxChars) }),
     ...(outcome.result === undefined ? {} : { result: boundSnapshot(outcome.result, deps.config.snapshotMaxChars) }),
-    ...(outcome.rc === undefined ? {} : { rc: outcome.rc }),
+    ...(outcome.rcCalls === undefined ? {} : { rcCalls: [...outcome.rcCalls] }),
     ...(outcome.resultSummary === undefined ? {} : { resultSummary: outcome.resultSummary }),
     ...(outcome.details === undefined ? {} : { details: outcome.details }),
   }
@@ -825,7 +764,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
       },
     },
     async execute(_args, exec) {
-      return await audited(deps, exec, { tool: 'unreal_ping', params: {}, primaryFunction: 'Ping' }, async () => {
+      return await audited(deps, exec, { tool: 'unreal_ping', params: {} }, async () => {
         const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.core, 'Ping', {})
         const value = typeof result.payload === 'string' ? result.payload : ''
         if (value !== 'pong') {
@@ -1243,24 +1182,12 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
       ],
     },
     async execute(args, exec) {
-      // Filled by the body; the Details builder runs after it and reads these.
-      let wire: { objectPath: string; propertyPath: string; valueJson: string } | undefined
       return await audited(
         deps,
         exec,
         {
           tool: 'unreal_get_property_value',
           params: args,
-          details: async outcome => {
-            const value = outcome.value as { valueJson?: unknown } | undefined
-            if (wire === undefined || outcome.error !== undefined) return undefined
-            if (typeof value?.valueJson !== 'string') return undefined
-            return await buildPropertyValueDetails(detailsDeps(deps, exec), {
-              objectPath: wire.objectPath,
-              propertyPath: wire.propertyPath,
-              valueJson: value.valueJson,
-            })
-          },
         },
         async trail => {
           const objectPath = requiredString(args.objectPath, 'objectPath')
@@ -1276,7 +1203,6 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
             `${objectPath}.${propertyPath}`,
           )
           const parsed = parseNestedJson(propertyValueJson, 'ValueJson')
-          wire = { objectPath, propertyPath, valueJson: propertyValueJson }
           return {
             value: {
               objectPath,
@@ -1343,18 +1269,12 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
       ],
     },
     async execute(args, exec) {
-      // Filled by the body; the Details builder runs after it and reads these.
-      let wire: { objectPath: string; propertyPath: string; oldValueJson: string; newValueJson: string } | undefined
       return await audited(
         deps,
         exec,
         {
           tool: 'unreal_set_property_value',
           params: args,
-          details: async outcome => {
-            if (wire === undefined || outcome.error !== undefined) return undefined
-            return await buildPropertyWriteDetails(detailsDeps(deps, exec), wire)
-          },
         },
         async trail => {
           const objectPath = requiredString(args.objectPath, 'objectPath')
@@ -1373,7 +1293,6 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           const newText = structString(write.payload, 'NewValueJson')
           const oldParsed = parseNestedJson(oldText, 'OldValueJson')
           const newParsed = parseNestedJson(newText, 'NewValueJson')
-          wire = { objectPath, propertyPath, oldValueJson: oldText, newValueJson: newText }
           return {
             value: {
               objectPath,
@@ -1446,25 +1365,12 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
       ],
     },
     async execute(args, exec) {
-      // Filled by the body; the Details builder runs after it and reads these —     // including on a failed call, where only the inputs are known.
-      let wire: { objectPath: string; functionName: string; parametersJson: string } | undefined
-      let result: { returnValueJson: string; outParametersJson: string; returnType: string } | undefined
       return await audited(
         deps,
         exec,
         {
           tool: 'unreal_call_function',
           params: args,
-          // The bespoke builder shows the target function's signature; the default
-          // one would repeat the dispatcher request (ObjectPath/FunctionName/ParametersJson).
-          skipDefaultDetails: true,
-          details: async outcome => {
-            if (wire === undefined) return undefined
-            return await buildCallFunctionDetails(detailsDeps(deps, exec), {
-              ...wire,
-              ...(outcome.error === undefined && result !== undefined ? { result } : {}),
-            })
-          },
         },
         async trail => {
           const objectPath = requiredString(args.objectPath, 'objectPath')
@@ -1473,7 +1379,6 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           const transaction = args.generateTransaction ?? false
           trail.objectPath = objectPath
           trail.functionName = functionName
-          wire = { objectPath, functionName, parametersJson }
           const returned = await deps.client.call(
             'CallFunction',
             {
@@ -1490,7 +1395,15 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           const returnParsed = parseNestedJson(returnText, 'ReturnValueJson')
           const outParsed = parseNestedJson(outText, 'OutParametersJson')
           const returnedNothing = returnText.trim() === ''
-          result = { returnValueJson: returnText, outParametersJson: outText, returnType: kitResult.ReturnType ?? '' }
+          // The card's raw data is the target call, not the dispatcher wrapper.
+          captureRcCall({
+            objectPath,
+            functionName,
+            parametersJson,
+            outParametersJson: outText,
+            returnValueJson: returnText,
+            returnType: kitResult.ReturnType ?? '',
+          })
           return {
             value: {
               objectPath,
@@ -1558,7 +1471,6 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
         return { objectPath, functionName, parametersJson, generateTransaction: entry.generateTransaction === true }
       })
       const callsJson = JSON.stringify(calls)
-      let batchDetails: CallDetails | undefined
       return await audited(
         deps,
         exec,
@@ -1567,10 +1479,6 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           // Record the real request: each call's parametersJson belongs under Raw params,
           // so the Raw result must not echo them a second time.
           params: { calls },
-          // The bespoke builder describes every sub-call; the dispatcher-level request
-          // (one CallsJson array) would be noise above them.
-          skipDefaultDetails: true,
-          details: async () => batchDetails,
         },
         async () => {
           const returned = await deps.client.call('CallFunctions', { CallsJson: callsJson }, exec.signal)
@@ -1610,17 +1518,19 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
             }
           })
           const failed = results.filter(result => !result.ok).length
-          batchDetails = await buildBatchCallDetails(detailsDeps(deps, exec), results.map(result => ({
-            index: result.index,
-            objectPath: result.objectPath,
-            functionName: result.functionName,
-            ok: result.ok,
-            parametersJson: calls[result.index]?.parametersJson ?? '{}',
-            returnValueJson: result.returnValueJson,
-            outParametersJson: result.outParametersJson,
-            returnType: result.returnType,
-            errorMessage: result.errorMessage,
-          })))
+          // Each batch entry is one logical RC call; capture them all so the card and
+          // its Raw data show every call, exactly like a tool that made them directly.
+          for (const result of results) {
+            captureRcCall({
+              objectPath: result.objectPath,
+              functionName: result.functionName,
+              parametersJson: calls[result.index]?.parametersJson ?? '{}',
+              outParametersJson: result.outParametersJson,
+              returnValueJson: result.returnValueJson,
+              returnType: result.returnType,
+              ...(result.ok ? {} : { errorMessage: result.errorMessage }),
+            })
+          }
           return {
             value: {
               batchSuccess: kitResult.bSuccess !== false,
@@ -1772,14 +1682,12 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
       // The adapter owns the file name: a temp directory plus a timestamp+uuid name means
       // two captures can never overwrite each other, so a recorded preview keeps its bytes.
       const screenshotPath = filePath === '' ? await newScreenshotPath() : filePath
-      let details: CallDetails | undefined
       return await audited(
         deps,
         exec,
         {
           tool: 'unreal_screenshot',
           params: { target, filePath: screenshotPath, showUI, waitMs },
-          details: async () => details,
         },
         async () => {
           const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.core, 'CaptureScreenshot', {
@@ -1812,15 +1720,6 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
             await new Promise(resolve => setTimeout(resolve, 100))
           }
           const waitedMs = Date.now() - waitedStarted
-          const size = exists ? await pngSize(resolvedPath) : undefined
-          if (exists) {
-            details = buildScreenshotDetails({
-              target,
-              filePath: resolvedPath,
-              bytes,
-              ...(size === undefined ? {} : { width: size.width, height: size.height }),
-            })
-          }
           return {
             value: {
               target,
@@ -1874,44 +1773,34 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
         exec,
         { tool: 'unreal_get_recent_log', params: { maxLines, minVerbosity, categoryFilter, clear } },
         async () => {
-          const parametersJson = JSON.stringify({
+          const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.core, 'GetRecentLog', {
             MaxLines: maxLines,
             MinVerbosity: minVerbosity,
             CategoryFilter: categoryFilter,
             bClear: clear,
           })
-          const returned = await deps.client.call(
-            'CallFunction',
-            {
-              ObjectPath: '/Script/EditorAutomation.Default__EditorAutomationCoreLibrary',
-              FunctionName: 'GetRecentLog',
-              ParametersJson: parametersJson,
-              bGenerateTransaction: false,
-            },
-            exec.signal,
-          )
-          const kitResult = assertKitResult<KitCallFunctionResult>('CallFunction', returned)
-          const parsed = parseNestedJson(kitResult.ReturnValueJson, 'ReturnValueJson').value as
-            | {
-                Entries?: Array<{ Time?: string; Verbosity?: string; Category?: string; Message?: string }>
-                TotalRecorded?: string
-                bTruncated?: string | boolean
-              }
-            | null
-          const rawEntries = parsed !== null && Array.isArray(parsed.Entries) ? parsed.Entries : []
-          const entries = rawEntries.map(entry => ({
-            time: String(entry.Time ?? ''),
-            verbosity: Number(entry.Verbosity ?? 0),
-            category: String(entry.Category ?? ''),
-            message: String(entry.Message ?? ''),
-          }))
-          const truncated = parsed !== null && (parsed.bTruncated === 'true' || parsed.bTruncated === true)
+          const page = result.payload !== null && typeof result.payload === 'object' && !Array.isArray(result.payload)
+            ? result.payload as Record<string, unknown>
+            : {}
+          const rawEntries = Array.isArray(page['Entries']) ? page['Entries'] as unknown[] : []
+          const entries = rawEntries.map(entry => {
+            const record = entry !== null && typeof entry === 'object' && !Array.isArray(entry)
+              ? entry as Record<string, unknown>
+              : {}
+            return {
+              time: String(record['Time'] ?? ''),
+              verbosity: Number(record['Verbosity'] ?? 0),
+              category: String(record['Category'] ?? ''),
+              message: String(record['Message'] ?? ''),
+            }
+          })
+          const truncated = page['bTruncated'] === 'true' || page['bTruncated'] === true
           return {
             value: {
               entries,
               count: entries.length,
               truncated,
-              totalRecorded: Number(parsed?.TotalRecorded ?? 0),
+              totalRecorded: Number(page['TotalRecorded'] ?? 0),
               functionName: 'GetRecentLog',
             },
             resultSummary: `${entries.length} log entries read`,
@@ -2413,11 +2302,10 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
       const width = typeof args.width === 'number' ? args.width : 0
       const height = typeof args.height === 'number' ? args.height : 0
       const screenshotPath = filePath === '' ? await newScreenshotPath() : filePath
-      let details: CallDetails | undefined
       return await audited(
         deps,
         exec,
-        { tool: 'unreal_capture_widget_screenshot', params: { objectPath, filePath: screenshotPath, width, height }, details: async () => details },
+        { tool: 'unreal_capture_widget_screenshot', params: { objectPath, filePath: screenshotPath, width, height } },
         async () => {
           const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umg, 'CaptureWidgetScreenshot', {
             Widget: objectPath,
@@ -2440,14 +2328,6 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
             // The render failed to write; the empty path check above already covers most cases.
           }
           const size = bytes > 0 ? await pngSize(resolvedPath) : undefined
-          if (bytes > 0) {
-            details = buildScreenshotDetails({
-              target: 'widget',
-              filePath: resolvedPath,
-              bytes,
-              ...(size === undefined ? {} : { width: size.width, height: size.height }),
-            })
-          }
           return {
             value: {
               objectPath,
@@ -3507,7 +3387,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
         })
       }
       const requested = raw === undefined ? [] : raw.map(String)
-      return await audited(deps, exec, { tool: 'unreal_save_dirty_assets', params: { assets: requested }, primaryFunction: 'SaveAssets' }, async () => {
+      return await audited(deps, exec, { tool: 'unreal_save_dirty_assets', params: { assets: requested } }, async () => {
         await requireEditorAutomationBool(
           deps,
           exec.signal,

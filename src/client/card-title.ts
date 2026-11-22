@@ -25,6 +25,12 @@ interface TitleValues {
   readonly name?: string | undefined
   /** `Cube_1.RelativeLocation`-shaped target. */
   readonly target?: string | undefined
+  /** Full target object path (read/write cards append it to the title). */
+  readonly object?: string | undefined
+  /** A count a title template mentions (batch cards). */
+  readonly count?: string | undefined
+  /** Comma-separated group names (tool-group cards). */
+  readonly groups?: string | undefined
 }
 
 /** A message lookup, as a panel render supplies it. */
@@ -105,9 +111,10 @@ export function shortTarget(objectPath: string | undefined, member: string | und
 
 /** Replace `{name}`/`{target}` placeholders in one template. */
 function fill(template: string, values: TitleValues): string {
-  return template
-    .split('{name}').join(values.name ?? '')
-    .split('{target}').join(values.target ?? '')
+  return template.replace(/\{(\w+)\}/g, (_match, key: string) => {
+    const value = values[key as keyof TitleValues]
+    return typeof value === 'string' ? value : ''
+  })
 }
 
 
@@ -139,6 +146,43 @@ function paramText(operation: OperationView, key: string): string | undefined {
  * @returns the title; a record with nothing usable falls back to the tool name.
  */
 /** Compose the title from the record; may throw or come back blank on a missing template. */
+/**
+ * How many RC calls a batch record carried.
+ *
+ * New records carry `rcCalls`; records written before that schema can still answer
+ * from their `calls` details section or the tool payload.
+ *
+ * @param operation - the recorded batch call.
+ * @returns the call count, 0 when the record carries none.
+ */
+function rcCallCount(operation: OperationView): number {
+  if (operation.rcCalls !== undefined) return operation.rcCalls.length
+  const fromDetails = operation.details?.sections.find(section => section.kind === 'calls')?.fields?.length
+  if (fromDetails !== undefined) return fromDetails
+  const result = operation.result !== null && typeof operation.result === 'object' && !Array.isArray(operation.result)
+    ? operation.result as Record<string, unknown>
+    : undefined
+  return Array.isArray(result?.['calls']) ? result['calls'].length : 0
+}
+
+/**
+ * The display label of one tool group (`umg` → `UMG`) with a raw-name fallback.
+ *
+ * @param group - the wire group name.
+ * @param tr - message lookup.
+ * @returns the display label, or the group name when no dictionary entry exists.
+ */
+function groupLabel(group: string, tr: Tr): string {
+  const key = `group.${group}` as MsgKey
+  try {
+    const label = tr(key)
+    if (typeof label === 'string' && label.trim() !== '' && label !== key) return label
+  } catch {
+    // A missing dictionary entry falls back to the wire name below.
+  }
+  return group
+}
+
 function composeActionTitle(operation: OperationView, tr: Tr): string {
   switch (operation.tool) {
     case 'unreal_ping':
@@ -158,46 +202,109 @@ function composeActionTitle(operation: OperationView, tr: Tr): string {
         name: owner === undefined || functionName === '' ? functionName : `${owner}.${functionName}`,
       })
     }
-    case 'unreal_get_property_type':
-      return fill(tr('card.propertyType'), {
-        name: operation.propertyPath ?? paramText(operation, 'propertyPath') ?? '',
-      })
+    case 'unreal_get_property_type': {
+      const propertyPath = operation.propertyPath ?? paramText(operation, 'propertyPath') ?? ''
+      const owner = typeLeaf(operation.targetType)
+      const target = owner === undefined
+        ? propertyPath
+        : (propertyPath === '' ? owner : `${owner}.${propertyPath}`)
+      return target === '' ? tr('card.propertyTypeBare') : fill(tr('card.propertyType'), { name: target })
+    }
     case 'unreal_get_object_class':
       return fill(tr('card.objectClass'), {
         name: shortObjectName(operation.objectPath ?? paramText(operation, 'objectPath')) ?? '',
       })
-    case 'unreal_get_property_value':
-      return fill(tr('card.read'), {
-        target:
-          shortTarget(
-            operation.objectPath ?? paramText(operation, 'objectPath'),
-            operation.propertyPath ?? paramText(operation, 'propertyPath'),
-          ) ?? '',
+    case 'unreal_get_property_value': {
+      const objectPath = operation.objectPath ?? paramText(operation, 'objectPath')
+      const name = operation.propertyPath ?? paramText(operation, 'propertyPath') ?? ''
+      return fill(objectPath === undefined ? tr('card.read') : tr('card.readFor'), {
+        name,
+        ...(objectPath === undefined ? {} : { object: objectPath }),
       })
-    case 'unreal_set_property_value':
-      return fill(tr('card.write'), {
-        target:
-          shortTarget(
-            operation.objectPath ?? paramText(operation, 'objectPath'),
-            operation.propertyPath ?? paramText(operation, 'propertyPath'),
-          ) ?? '',
+    }
+    case 'unreal_set_property_value': {
+      const objectPath = operation.objectPath ?? paramText(operation, 'objectPath')
+      const name = operation.propertyPath ?? paramText(operation, 'propertyPath') ?? ''
+      return fill(objectPath === undefined ? tr('card.write') : tr('card.writeFor'), {
+        name,
+        ...(objectPath === undefined ? {} : { object: objectPath }),
       })
-    case 'unreal_call_function':
-      return fill(tr('card.call'), {
-        target:
-          shortTarget(
-            operation.objectPath ?? paramText(operation, 'objectPath'),
-            operation.functionName ?? paramText(operation, 'functionName'),
-          ) ?? '',
+    }
+    case 'unreal_call_function': {
+      const objectPath = operation.objectPath ?? paramText(operation, 'objectPath')
+      const name = operation.functionName ?? paramText(operation, 'functionName') ?? ''
+      return fill(objectPath === undefined ? tr('card.call') : tr('card.callWithObject'), {
+        name,
+        ...(objectPath === undefined ? {} : { object: objectPath }),
       })
-    case 'unreal_start_pie':
-      return tr('card.startPie')
+    }
+    case 'unreal_call_functions': {
+      const count = rcCallCount(operation)
+      return count === 1 ? tr('card.batchOne') : fill(tr('card.batch'), { count: String(count) })
+    }
+    case 'unreal_get_asset_info': {
+      const assetPath = paramText(operation, 'assetPath') ?? ''
+      return assetPath === '' ? tr('tool.get_asset_info') : fill(tr('card.assetInfo'), { name: assetPath })
+    }
+    case 'unreal_get_blueprint_info': {
+      const blueprint = paramText(operation, 'blueprint') ?? ''
+      return blueprint === '' ? tr('tool.get_blueprint_info') : fill(tr('card.blueprintInfo'), { name: blueprint })
+    }
+    case 'unreal_delete_blueprint': {
+      const blueprint = paramText(operation, 'blueprint') ?? ''
+      return blueprint === '' ? tr('tool.delete_blueprint') : fill(tr('card.deleteBlueprint'), { name: blueprint })
+    }
+    case 'unreal_start_pie': {
+      const params = operation.params !== null && typeof operation.params === 'object' && !Array.isArray(operation.params)
+        ? operation.params as Record<string, unknown>
+        : undefined
+      const result = operation.result !== null && typeof operation.result === 'object' && !Array.isArray(operation.result)
+        ? operation.result as Record<string, unknown>
+        : undefined
+      const levelPath = typeof result?.['levelPath'] === 'string' && result['levelPath'] !== ''
+        ? result['levelPath']
+        : (typeof params?.['levelPath'] === 'string' ? params['levelPath'] : '')
+      const newWindow = result?.['newWindow'] === true || params?.['newWindow'] === true
+      const base = levelPath === '' ? tr('card.startPieCurrent') : fill(tr('card.startPieLevel'), { name: levelPath })
+      return newWindow ? `${base}${tr('card.newWindowSuffix')}` : base
+    }
     case 'unreal_stop_pie':
       return tr('card.stopPie')
     case 'unreal_is_pie_running':
       return tr('card.pieRunning')
-    case 'unreal_set_tool_groups':
-      return tr('card.toolGroups')
+    case 'unreal_open_level': {
+      const params = operation.params !== null && typeof operation.params === 'object' && !Array.isArray(operation.params)
+        ? operation.params as Record<string, unknown>
+        : undefined
+      const result = operation.result !== null && typeof operation.result === 'object' && !Array.isArray(operation.result)
+        ? operation.result as Record<string, unknown>
+        : undefined
+      const levelPath = typeof result?.['levelPath'] === 'string' && result['levelPath'] !== ''
+        ? result['levelPath']
+        : (typeof params?.['levelPath'] === 'string' ? params['levelPath'] : '')
+      return levelPath === '' ? tr('tool.open_level') : fill(tr('card.openLevel'), { name: levelPath })
+    }
+    case 'unreal_set_tool_groups': {
+      const params = operation.params !== null && typeof operation.params === 'object' && !Array.isArray(operation.params)
+        ? operation.params as Record<string, unknown>
+        : undefined
+      const result = operation.result !== null && typeof operation.result === 'object' && !Array.isArray(operation.result)
+        ? operation.result as Record<string, unknown>
+        : undefined
+      const rawGroups = Array.isArray(result?.['groups'])
+        ? result['groups']
+        : (Array.isArray(params?.['groups']) ? params['groups'] : [])
+      const groups = rawGroups.map(group => String(group)).filter(group => group !== '')
+      if (groups.length === 0) return tr('card.toolGroups')
+      const enabled = result?.['enabled'] === true || params?.['enabled'] === true
+      return fill(tr(enabled ? 'card.toolGroupsEnabled' : 'card.toolGroupsDisabled'), {
+        groups: groups.map(group => groupLabel(group, tr)).join(', '),
+      })
+    }
+    case 'unreal_capture_widget_screenshot': {
+      const widget = paramText(operation, 'objectPath') ?? ''
+      return widget === '' ? tr('tool.capture_widget_screenshot') : fill(tr('card.widgetScreenshot'), { name: widget })
+    }
     case 'unreal_get_widget_roots':
       return tr('card.widgetRoots')
     case 'unreal_get_widget_blueprint_path':

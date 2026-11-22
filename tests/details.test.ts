@@ -15,6 +15,7 @@ import {
   boundDetails,
   buildCallFunctionDetails,
   buildDefaultCallDetails,
+  buildRcCallDetails,
   buildPropertyValueDetails,
   buildPropertyWriteDetails,
   mergeCallDetails,
@@ -538,6 +539,57 @@ describe('level-instance call enrichment', () => {
       Type: 'class(/Script/Engine.StaticMeshComponent)',
       FunctionName: 'GetDisplayName',
     })
+  })
+})
+
+describe('buildRcCallDetails', () => {
+  const coreLibrary = '/Script/EditorAutomation.Default__EditorAutomationCoreLibrary'
+  const signature = (parameters: Record<string, unknown>) => ok({
+    Info: {
+      Name: String(parameters['FunctionName'] ?? ''),
+      bBlueprintCallable: true,
+      Parameters: [],
+      ReturnType: 'string',
+    },
+  })
+
+  it('renders one RC call as a single-call card', async () => {
+    const details = await buildRcCallDetails(deps({ overrides: { GetFunctionInfo: signature } }), [{
+      objectPath: coreLibrary,
+      functionName: 'Ping',
+      parametersJson: '{}',
+      outParametersJson: '{"OutValue":"pong"}',
+      returnValueJson: '{"bSuccess":"true"}',
+      returnType: 'struct(/Script/EditorAutomation.EditorAutomationResult)',
+    }])
+    assert.deepEqual(details?.sections.map(section => section.kind), ['inputs', 'returns', 'outputs'])
+    const outputs = details?.sections.find(section => section.kind === 'outputs')?.fields ?? []
+    assert.deepEqual(outputs.map(field => field.name), ['OutValue'])
+  })
+
+  it('renders several RC calls as the calls list, one sub-card per call', async () => {
+    const details = await buildRcCallDetails(deps({ overrides: { GetFunctionInfo: signature } }), [
+      {
+        objectPath: coreLibrary,
+        functionName: 'Ping',
+        parametersJson: '{}',
+        outParametersJson: '{"OutValue":"pong"}',
+        returnValueJson: '{"bSuccess":"true"}',
+      },
+      {
+        objectPath: coreLibrary,
+        functionName: 'GetEditorInfo',
+        parametersJson: '{}',
+        outParametersJson: '{"OutInfo":{"ProcessId":"1"}}',
+        returnValueJson: '{"bSuccess":"true"}',
+      },
+    ])
+    assert.deepEqual(details?.sections.map(section => section.kind), ['calls'])
+    const fields = details?.sections[0]?.fields ?? []
+    assert.equal(fields.length, 2)
+    assert.deepEqual(fields.map(field => field.name), ['#0', '#1'])
+    const second = fields[1]?.value as { functionName?: string } | undefined
+    assert.equal(second?.functionName, 'GetEditorInfo')
   })
 })
 

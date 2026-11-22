@@ -89,7 +89,20 @@ describe('actionTitle (English)', () => {
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_property_type', propertyPath: 'RelativeLocation' }), tr),
-      'Get RelativeLocation Property Type',
+      'Get Property Type: RelativeLocation',
+    )
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_get_property_type', propertyPath: 'bHidden', propertyType: 'bool' }), tr),
+      'Get Property Type: bHidden',
+    )
+    assert.equal(
+      actionTitle(operation({
+        tool: 'unreal_get_property_type',
+        targetType: 'class(/Script/Engine.StaticMeshComponent)',
+        propertyPath: 'bHidden',
+        propertyType: 'bool',
+      }), tr),
+      'Get Property Type: StaticMeshComponent.bHidden',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_object_class', objectPath: CUBE }), tr),
@@ -97,15 +110,15 @@ describe('actionTitle (English)', () => {
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_property_value', objectPath: CUBE, propertyPath: 'RelativeLocation' }), tr),
-      'Read Cube_1.RelativeLocation',
+      'Get RelativeLocation: /Game/Maps/Demo.Demo:PersistentLevel.Cube_1',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_set_property_value', objectPath: CUBE, propertyPath: 'RelativeLocation' }), tr),
-      'Set Cube_1.RelativeLocation',
+      'Set RelativeLocation: /Game/Maps/Demo.Demo:PersistentLevel.Cube_1',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_call_function', objectPath: CUBE, functionName: 'GetDisplayName' }), tr),
-      'Call Cube_1.GetDisplayName',
+      'Call GetDisplayName: /Game/Maps/Demo.Demo:PersistentLevel.Cube_1',
     )
   })
 
@@ -115,7 +128,7 @@ describe('actionTitle (English)', () => {
         tool: 'unreal_get_property_value',
         params: { objectPath: CUBE, propertyPath: 'RelativeLocation.Z' },
       }), tr),
-      'Read Cube_1.RelativeLocation.Z',
+      'Get RelativeLocation.Z: /Game/Maps/Demo.Demo:PersistentLevel.Cube_1',
     )
     assert.equal(
       actionTitle(operation({
@@ -124,6 +137,66 @@ describe('actionTitle (English)', () => {
       }), tr),
       'Get Actor.K2_DestroyActor Function Info',
     )
+  })
+
+  it('names the deleted Blueprint in a Delete Blueprint title', () => {
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_delete_blueprint', params: { blueprint: '/Game/Temp/BP_CustomCardTest' } }), tr),
+      'Delete Blueprint: /Game/Temp/BP_CustomCardTest',
+    )
+    assert.equal(actionTitle(operation({ tool: 'unreal_delete_blueprint' }), tr), 'Delete Blueprint')
+  })
+
+  it('names the target in Asset Info and Blueprint Info titles', () => {
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_get_asset_info', params: { assetPath: '/Game/UI/WBP_Tetris.WBP_Tetris' } }), tr),
+      'Get Asset Info: /Game/UI/WBP_Tetris.WBP_Tetris',
+    )
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_get_blueprint_info', params: { blueprint: '/Game/UI/WBP_Tetris' } }), tr),
+      'Get Blueprint Info: /Game/UI/WBP_Tetris',
+    )
+  })
+
+  it('names the widget in a widget screenshot title', () => {
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_capture_widget_screenshot', params: { objectPath: '/Game/UI/WBP_Tetris.WBP_Tetris_C' } }), tr),
+      'Capture Widget Screenshot: /Game/UI/WBP_Tetris.WBP_Tetris_C',
+    )
+  })
+
+  it('says whether tool groups were enabled or disabled', () => {
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_set_tool_groups', params: { groups: ['umg'], enabled: true } }), tr),
+      'Enable Tool Groups: UMG',
+    )
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_set_tool_groups', params: { groups: ['umg', 'umg_editor'], enabled: false } }), tr),
+      'Disable Tool Groups: UMG, UMG Editor',
+    )
+  })
+
+  it('puts the level into the Start PIE title', () => {
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_start_pie', params: { levelPath: '/Game/Maps/L_Tetris' } }), tr),
+      'Start PIE: /Game/Maps/L_Tetris',
+    )
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_start_pie', params: { levelPath: '/Game/Maps/L_Tetris', newWindow: true } }), tr),
+      'Start PIE: /Game/Maps/L_Tetris (new window)',
+    )
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_start_pie', params: { levelPath: '', newWindow: false } }), tr),
+      'Start PIE: current level',
+    )
+  })
+
+  it('puts the level into the Open Level title', () => {
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_open_level', params: { levelPath: '/Game/Maps/L_Tetris' } }), tr),
+      'Open Level: /Game/Maps/L_Tetris',
+    )
+    assert.equal(actionTitle(operation({ tool: 'unreal_open_level' }), tr), 'Open Level')
   })
 
   it('titles domain tools through their dictionary labels', () => {
@@ -157,6 +230,25 @@ describe('actionTitle (English)', () => {
     assert.equal(toolLabel('unreal_add_event_node', silent), 'Add event node')
     assert.equal(toolLabel('unreal_unknown_tool', tr), 'unreal_unknown_tool')
   })
+
+  it('says how many Remote Control Blueprint functions a batch record called', () => {
+    const batch = operation({
+      tool: 'unreal_call_functions',
+      rcCalls: [
+        { objectPath: '/Script/X', functionName: 'Ping', parametersJson: '{}', outParametersJson: '{}' },
+        { objectPath: '/Script/X', functionName: 'GetEditorInfo', parametersJson: '{}', outParametersJson: '{}' },
+      ],
+    })
+    assert.equal(actionTitle(batch, tr), 'Call 2 Functions')
+    const single = operation({
+      tool: 'unreal_call_functions',
+      rcCalls: [
+        { objectPath: '/Script/X', functionName: 'Ping', parametersJson: '{}', outParametersJson: '{}' },
+      ],
+    })
+    assert.equal(actionTitle(single, tr), 'Call 1 Function')
+    assert.equal(actionTitle(operation({ tool: 'unreal_call_functions' }), tr), 'Call 0 Functions')
+  })
 })
 
 describe('actionTitle (Chinese, exact strings)', () => {
@@ -185,7 +277,20 @@ describe('actionTitle (Chinese, exact strings)', () => {
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_property_type', propertyPath: 'RelativeLocation' }), tr),
-      '获取 RelativeLocation 的属性类型',
+      '获取属性类型：RelativeLocation',
+    )
+    assert.equal(
+      actionTitle(operation({ tool: 'unreal_get_property_type', propertyPath: 'bHidden', propertyType: 'bool' }), tr),
+      '获取属性类型：bHidden',
+    )
+    assert.equal(
+      actionTitle(operation({
+        tool: 'unreal_get_property_type',
+        targetType: 'class(/Script/Engine.StaticMeshComponent)',
+        propertyPath: 'bHidden',
+        propertyType: 'bool',
+      }), tr),
+      '获取属性类型：StaticMeshComponent.bHidden',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_object_class', objectPath: CUBE }), tr),
@@ -193,15 +298,15 @@ describe('actionTitle (Chinese, exact strings)', () => {
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_get_property_value', objectPath: CUBE, propertyPath: 'RelativeLocation' }), tr),
-      '读取 Cube_1.RelativeLocation 属性',
+      '获取 RelativeLocation 属性：/Game/Maps/Demo.Demo:PersistentLevel.Cube_1',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_set_property_value', objectPath: CUBE, propertyPath: 'RelativeLocation' }), tr),
-      '设置 Cube_1.RelativeLocation 属性',
+      '设置 RelativeLocation 属性：/Game/Maps/Demo.Demo:PersistentLevel.Cube_1',
     )
     assert.equal(
       actionTitle(operation({ tool: 'unreal_call_function', objectPath: CUBE, functionName: 'GetDisplayName' }), tr),
-      '调用 Cube_1.GetDisplayName 函数',
+      '调用 GetDisplayName 函数：/Game/Maps/Demo.Demo:PersistentLevel.Cube_1',
     )
   })
 })

@@ -16,7 +16,7 @@ import css from './panel.module.css'
 import { isLegacyRecord } from './card-title.ts'
 import { formatDuration, formatJson } from './format.ts'
 import type { MsgKey } from './locales.ts'
-import type { OperationView } from './wire.ts'
+import type { OperationView, RcCallView } from './wire.ts'
 
 /** A message lookup, as the panel render supplies it. */
 type Tr = (key: MsgKey) => string
@@ -70,10 +70,6 @@ function typeRows(operation: OperationView, tr: Tr): MetaRow[] {
   }
   if (operation.propertyType !== undefined && operation.propertyType !== '') {
     rows.push({ label: tr('raw.propertyType'), value: operation.propertyType })
-  }
-  const returnType = result?.['returnType']
-  if (typeof returnType === 'string' && returnType !== '') {
-    rows.push({ label: tr('raw.returnType'), value: returnType })
   }
   const classType = result?.['classType']
   if (typeof classType === 'string' && classType !== '') {
@@ -137,6 +133,29 @@ function parseRawBlock(text: string | undefined): unknown {
   }
 }
 
+/** Metadata lines for one RC call: which object/function it reached. */
+function callRows(call: RcCallView, tr: Tr): MetaRow[] {
+  return [
+    { label: tr('raw.object'), value: call.objectPath },
+    { label: tr('raw.function'), value: call.functionName },
+    ...(call.errorMessage === undefined || call.errorMessage === ''
+      ? []
+      : [{ label: tr('raw.errorMessage'), value: call.errorMessage }]),
+  ]
+}
+
+/** The payload blocks of one RC call, parsed so a JSON answer renders as JSON. */
+function callBlocks(call: RcCallView, tr: Tr): { label: string; value: unknown }[] {
+  const blocks: { label: string; value: unknown }[] = [
+    { label: tr('detail.rawParams'), value: parseRawBlock(call.parametersJson) },
+  ]
+  const outParameters = parseRawBlock(call.outParametersJson)
+  if (outParameters !== undefined) blocks.push({ label: tr('detail.rawOutParams'), value: outParameters })
+  const returnValue = parseRawBlock(call.returnValueJson)
+  if (returnValue !== undefined) blocks.push({ label: tr('detail.rawResult'), value: returnValue })
+  return blocks
+}
+
 /**
  * One card's raw payload view, shown while the card menu's radio item is checked.
  * It replaces the formatted body instead of stacking below it: the menu switches
@@ -152,12 +171,14 @@ export function RawDataDisclosure(props: {
 }): ReactNode {
   const { operation, tr, open } = props
   if (!open) return undefined
+  const rcCalls = operation.rcCalls ?? (operation.rc === undefined ? [] : [operation.rc])
   const meta: MetaRow[] = [
     { label: tr('raw.status'), value: operation.ok ? tr('row.ok') : tr('row.failed') },
     { label: tr('raw.tool'), value: operation.tool },
     ...(operation.durationMs === undefined ? [] : [{ label: tr('raw.duration'), value: formatDuration(operation.durationMs) }]),
     ...(operation.callId === undefined ? [] : [{ label: tr('raw.callId'), value: operation.callId }]),
     ...(operation.cached === undefined ? [] : [{ label: tr('raw.cached'), value: operation.cached ? tr('raw.yes') : tr('raw.no') }]),
+    ...(rcCalls.length > 1 ? [{ label: tr('raw.calls'), value: String(rcCalls.length) }] : []),
     ...countRows(operation, tr),
   ]
   const types = typeRows(operation, tr)
@@ -167,20 +188,12 @@ export function RawDataDisclosure(props: {
     ...(operation.errorHint === undefined ? [] : [{ label: tr('raw.errorHint'), value: operation.errorHint }]),
   ]
   const legacy = isLegacyRecord(operation)
-  const blocks: { label: string; value: unknown }[] = []
-  const rc = operation.rc
-  if (rc !== undefined) {
-    // The card's raw data is the primary RC call itself: request, out parameters and
-    // return value exactly as the Engine saw them.
-    blocks.push({ label: tr('detail.rawParams'), value: parseRawBlock(rc.parametersJson) })
-    const outParameters = parseRawBlock(rc.outParametersJson)
-    if (outParameters !== undefined) blocks.push({ label: tr('detail.rawOutParams'), value: outParameters })
-    const returnValue = parseRawBlock(rc.returnValueJson)
-    if (returnValue !== undefined) blocks.push({ label: tr('detail.rawResult'), value: returnValue })
-  } else {
-    // Older records (and tools that are not one RC call) keep the tool's own payloads.
-    if (operation.params !== undefined) blocks.push({ label: tr('detail.rawParams'), value: operation.params })
-    if (operation.result !== undefined) blocks.push({ label: tr('detail.rawResult'), value: operation.result })
+  // A record without captured calls (an old row, or a local tool that never reached
+  // the editor) keeps the tool-level payloads as its raw data.
+  const toolBlocks: { label: string; value: unknown }[] = []
+  if (rcCalls.length === 0) {
+    if (operation.params !== undefined) toolBlocks.push({ label: tr('detail.rawParams'), value: operation.params })
+    if (operation.result !== undefined) toolBlocks.push({ label: tr('detail.rawResult'), value: operation.result })
   }
 
   return (
@@ -195,7 +208,23 @@ export function RawDataDisclosure(props: {
           )}
         </div>
         {legacy && <div className={css.detailNote} data-unreal-legacy>{tr('detail.legacy')}</div>}
-        {blocks.map(block => (
+        {rcCalls.map((call, index) => (
+          <div className={css.rawCall} key={`call-${String(index)}`} data-unreal-rc-call>
+            {rcCalls.length > 1 && (
+              <div className={css.detailLabel}>{`${tr('raw.rcCall')} #${String(index + 1)}`}</div>
+            )}
+            <div className={css.rawMeta}>
+              {callRows(call, tr).map(row => <MetaLine key={row.label} label={row.label} value={row.value} />)}
+            </div>
+            {callBlocks(call, tr).map(block => (
+              <div className={css.rawBlock} key={block.label}>
+                <div className={css.detailLabel}>{block.label}</div>
+                <pre className={css.payload} data-unreal-raw-block>{highlightedJson(formatJson(block.value, 4000))}</pre>
+              </div>
+            ))}
+          </div>
+        ))}
+        {toolBlocks.map(block => (
           <div className={css.rawBlock} key={block.label}>
             <div className={css.detailLabel}>{block.label}</div>
             <pre className={css.payload} data-unreal-raw-block>{highlightedJson(formatJson(block.value, 4000))}</pre>
