@@ -631,9 +631,10 @@ export async function buildDefaultCallDetails(
 export async function buildRcCallDetails(
   deps: DetailsDeps,
   calls: readonly RcCallSnapshot[],
+  options?: { readonly forceBatch?: boolean | undefined },
 ): Promise<CallDetails | undefined> {
   if (calls.length === 0) return undefined
-  if (calls.length === 1) {
+  if (calls.length === 1 && options?.forceBatch !== true) {
     const call = calls[0]!
     return await buildCallFunctionDetails(deps, {
       objectPath: call.objectPath,

@@ -240,7 +240,13 @@ function composeActionTitle(operation: OperationView, tr: Tr): string {
     }
     case 'unreal_call_functions': {
       const count = rcCallCount(operation)
-      return count === 1 ? tr('card.batchOne') : fill(tr('card.batch'), { count: String(count) })
+      if (count === 1) {
+        const firstName = operation.rcCalls?.[0]?.functionName
+        return firstName === undefined || firstName === ''
+          ? tr('card.batchOne')
+          : fill(tr('card.batchOneName'), { name: firstName })
+      }
+      return fill(tr('card.batch'), { count: String(count) })
     }
     case 'unreal_get_asset_info': {
       const assetPath = paramText(operation, 'assetPath') ?? ''
@@ -272,6 +278,18 @@ function composeActionTitle(operation: OperationView, tr: Tr): string {
       return tr('card.stopPie')
     case 'unreal_is_pie_running':
       return tr('card.pieRunning')
+    case 'unreal_get_blueprint_graphs': {
+      const blueprint = paramText(operation, 'blueprint') ?? ''
+      return blueprint === '' ? tr('tool.get_blueprint_graphs') : fill(tr('card.listGraphs'), { name: blueprint })
+    }
+    case 'unreal_get_graph_nodes': {
+      const graph = paramText(operation, 'graph') ?? ''
+      return graph === '' ? tr('tool.get_graph_nodes') : fill(tr('card.listGraphNodes'), { name: graph })
+    }
+    case 'unreal_convert_graph_to_typescript': {
+      const graph = paramText(operation, 'graph') ?? ''
+      return graph === '' ? tr('tool.convert_graph_to_typescript') : fill(tr('card.convertGraphToTypeScript'), { name: graph })
+    }
     case 'unreal_open_level': {
       const params = operation.params !== null && typeof operation.params === 'object' && !Array.isArray(operation.params)
         ? operation.params as Record<string, unknown>

@@ -134,6 +134,7 @@ export const OWNED_TOOLS: ReadonlySet<string> = new Set([
   'unreal_save_current_level',
   'unreal_get_blueprint_graphs',
   'unreal_get_graph_nodes',
+  'unreal_convert_graph_to_typescript',
   'unreal_get_node_pins',
   'unreal_add_call_function_node',
   'unreal_add_event_node',
@@ -264,7 +265,7 @@ async function audited<T>(
   const rcCalls: RcCallSnapshot[] = []
   try {
     const outcome = await withRcCapture(rcCalls, () => run(trail))
-    const details = await enrich(deps, exec, rcCalls)
+    const details = await enrich(deps, exec, rcCalls, meta.tool)
     await record(deps, exec, meta, {
       ok: true,
       durationMs: deps.now() - started,
@@ -277,7 +278,7 @@ async function audited<T>(
     return outcome.value
   } catch (error: unknown) {
     const failure = asKitError(error)
-    const details = await enrich(deps, exec, rcCalls)
+    const details = await enrich(deps, exec, rcCalls, meta.tool)
     await record(deps, exec, meta, {
       ok: false,
       durationMs: deps.now() - started,
@@ -325,6 +326,7 @@ async function enrich(
   deps: ToolDeps,
   exec: RunContext,
   rcCalls: readonly RcCallSnapshot[],
+  tool?: string | undefined,
 ): Promise<CallDetails | undefined> {
   if (rcCalls.length === 0) return undefined
   let timer: NodeJS.Timeout | undefined
@@ -332,7 +334,12 @@ async function enrich(
     const timeout = new Promise<undefined>((settle) => {
       timer = setTimeout(() => { settle(undefined) }, deps.config.enrichmentTimeoutMs)
     })
-    return await Promise.race([buildRcCallDetails(detailsDeps(deps, exec), rcCalls), timeout])
+    // The batch tool keeps the calls-list shape even for one entry: its card is a
+    // batch card, and a single reflected function table would read like a plain call.
+    const details = buildRcCallDetails(detailsDeps(deps, exec), rcCalls, {
+      forceBatch: tool === 'unreal_call_functions',
+    })
+    return await Promise.race([details, timeout])
   } catch {
     return undefined
   } finally {
@@ -2789,6 +2796,50 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           subGraphObjectPath: structString(node, 'SubGraphObjectPath'),
         }))
         return { value: { graph, nodes, count: nodes.length, recursive, functionName: 'GetGraphNodes' }, resultSummary: `${nodes.length} nodes` }
+      })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_convert_graph_to_typescript',
+    description:
+      'Convert one regular Blueprint (K2) graph to compact TypeScript-like pseudocode. Supports event/function entries, exec chains, Branch, Sequence, Switch, function calls with named arguments, variable reads/writes, Select, Cast, Make/BreakStruct, GetArrayItem, CreateWidget/SpawnActor and literals; unsupported nodes become comments. Animation and material graphs are rejected because their execution models differ. Returns nodeCount, lineCount and the rendered text.',
+    parameters: {
+      graph: { type: 'string', required: true, description: 'Graph object path (from unreal_get_blueprint_graphs).' },
+      recursive: { type: 'boolean', description: 'Also include nodes of macro and collapsed sub-graphs in nodeCount; default true.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          graph: { type: 'string', required: true },
+          nodeCount: { type: 'integer', required: true },
+          lineCount: { type: 'integer', required: true },
+          typescript: { type: 'string', required: true },
+          functionName: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: String(value.typescript) }],
+    },
+    async execute(args, exec) {
+      const graph = requiredString(args.graph, 'graph')
+      const recursive = args.recursive !== false
+      return await audited(deps, exec, { tool: 'unreal_convert_graph_to_typescript', params: { graph, recursive } }, async () => {
+        const result = await invokeEditorAutomation(
+          deps,
+          exec.signal,
+          EDITOR_AUTOMATION_LIBRARIES.graph,
+          'ConvertGraphToTypeScript',
+          { Graph: graph, bRecursive: recursive },
+        )
+        const nodeCount = Number(structNumber(result.payload, 'OutNodeCount') ?? 0)
+        const lineCount = Number(structNumber(result.payload, 'OutLineCount') ?? 0)
+        const typescript = structString(result.payload, 'OutTypescript')
+        return {
+          value: { graph, nodeCount, lineCount, typescript, recursive, functionName: 'ConvertGraphToTypeScript' },
+          resultSummary: `${nodeCount} nodes, ${lineCount} lines`,
+        }
       })
     },
   }))

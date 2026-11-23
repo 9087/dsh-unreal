@@ -567,6 +567,18 @@ describe('buildRcCallDetails', () => {
     assert.deepEqual(outputs.map(field => field.name), ['OutValue'])
   })
 
+  it('keeps one call in the calls list when the batch card asks for it', async () => {
+    const details = await buildRcCallDetails(deps({ overrides: { GetFunctionInfo: signature } }), [{
+      objectPath: coreLibrary,
+      functionName: 'Ping',
+      parametersJson: '{}',
+      outParametersJson: '{"OutValue":"pong"}',
+      returnValueJson: '{"bSuccess":"true"}',
+    }], { forceBatch: true })
+    assert.deepEqual(details?.sections.map(section => section.kind), ['calls'])
+    assert.equal(details?.sections[0]?.fields?.length, 1)
+  })
+
   it('renders several RC calls as the calls list, one sub-card per call', async () => {
     const details = await buildRcCallDetails(deps({ overrides: { GetFunctionInfo: signature } }), [
       {

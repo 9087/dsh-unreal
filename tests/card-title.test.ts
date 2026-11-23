@@ -246,7 +246,7 @@ describe('actionTitle (English)', () => {
         { objectPath: '/Script/X', functionName: 'Ping', parametersJson: '{}', outParametersJson: '{}' },
       ],
     })
-    assert.equal(actionTitle(single, tr), 'Call 1 Function')
+    assert.equal(actionTitle(single, tr), 'Call 1 Function: Ping')
     assert.equal(actionTitle(operation({ tool: 'unreal_call_functions' }), tr), 'Call 0 Functions')
   })
 })

@@ -828,6 +828,10 @@ function withLegacyCalls(
 ): readonly DetailSectionView[] {
   if (tool !== 'unreal_call_functions') return sections
   if (sections.some(section => section.kind === 'calls')) return sections
+  // Records written since typed Details exist already carry their own sections; only
+  // pre-Details records need the synthetic calls list. Synthesising on top of real
+  // sections would show the same single call twice.
+  if (sections.length > 0) return sections
   if (result === null || typeof result !== 'object' || Array.isArray(result)) return sections
   const record = result as Record<string, unknown>
   const calls = Array.isArray(record['calls']) ? record['calls'] : []
@@ -1153,6 +1157,9 @@ export function DetailsView(props: {
             result={props.result}
           />
         ))}
+        {props.details?.truncated === true && (
+          <div className={css.detailNote} data-unreal-truncated>{props.tr('detail.truncated')}</div>
+        )}
         {props.failure !== undefined && <FailureNoticeView failure={props.failure} tr={props.tr} />}
       </div>
     </RpcCallerContext.Provider>
@@ -1498,6 +1505,42 @@ export function PropertyChangeSection(props: {
       />
       {error !== undefined && <div className={css.detailNote}>{schemaNote(error, props.tr)}</div>}
     </>
+  )
+}
+
+/** One row of a simple list card: a stable key and its visible one-line text. */
+export interface ListCardRow {
+  readonly key: string
+  readonly text: string
+}
+
+/**
+ * The shared shape of list-style custom cards: one summary sentence, one data block
+ * of rows, and an empty-state note.
+ *
+ * It is deliberately only a presentation primitive — each tool still supplies its
+ * own sentence, empty text and row formatting, so a list card never needs a
+ * tool-specific renderer inside the component.
+ *
+ * @param props - summary, rows and the empty note.
+ * @returns the list section.
+ */
+export function ListCard(props: {
+  readonly summary: string
+  readonly rows: readonly ListCardRow[]
+  readonly emptyText: string
+}): ReactNode {
+  return (
+    <div className={css.detailSection} data-unreal-list-card>
+      <div className={css.customSentence}>{props.summary}</div>
+      {props.rows.length === 0
+        ? <div className={css.detailNote}>{props.emptyText}</div>
+        : (
+            <div className={css.customList}>
+              {props.rows.map(row => <span className={css.customListRow} key={row.key}>{row.text}</span>)}
+            </div>
+          )}
+    </div>
   )
 }
 

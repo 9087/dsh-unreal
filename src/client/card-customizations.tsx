@@ -17,9 +17,10 @@ import type { ReactNode } from 'react'
 
 import css from './panel.module.css'
 import { FailureNotice } from './card-failure.tsx'
-import { CallsDetails, DefaultDetailsView, KeyValueRows, PropertyChangeSection, PropertyValueSection, RcCallDetails, ScreenshotSection } from './details-view.tsx'
+import { CallsDetails, DefaultDetailsView, KeyValueRows, ListCard, PropertyChangeSection, PropertyValueSection, RcCallDetails, ScreenshotSection } from './details-view.tsx'
 import type { Tr } from './details-view.tsx'
 import { typeLeaf } from './format.ts'
+import { TypeScriptCodeBlock } from './typescript-code.tsx'
 import { typeLabel } from './type-label.ts'
 import type { OperationView, RpcCaller } from './wire.ts'
 
@@ -749,6 +750,104 @@ registerCardCustomization('unreal_start_pie', {
 registerCardCustomization('unreal_open_level', {
   // The title names the opened level; there is nothing else to show.
   render: () => undefined,
+})
+
+registerCardCustomization('unreal_convert_graph_to_typescript', {
+  render: ({ operation, tr }) => {
+    if (!operation.ok) return undefined
+    const result = isRecordValue(operation.result) ? operation.result : undefined
+    const typescript = typeof result?.['typescript'] === 'string' ? result['typescript'] : ''
+    if (typescript === '') return undefined
+    const nodes = numberFrom(result, ['nodeCount']) ?? 0
+    const lines = numberFrom(result, ['lineCount']) ?? 0
+    return (
+      <div className={css.detailSection} data-unreal-graph-ts>
+        <TypeScriptCodeBlock code={typescript} />
+        <div className={css.detailNote}>
+          {fillTemplate(tr('custom.renderGraph.meta'), { nodes: String(nodes), lines: String(lines) })}
+        </div>
+      </div>
+    )
+  },
+})
+
+registerCardCustomization('unreal_get_blueprint_graphs', {
+  render: ({ operation, tr }) => {
+    if (!operation.ok) return undefined
+    const result = isRecordValue(operation.result) ? operation.result : undefined
+    if (result === undefined) return undefined
+    const blueprint = typeof result['blueprint'] === 'string' ? result['blueprint'] : ''
+    const graphs = Array.isArray(result['graphs']) ? result['graphs'] as unknown[] : []
+    const rows = graphs.flatMap((entry, index) => {
+      if (!isRecordValue(entry)) return []
+      const name = String(entry['graphName'] ?? '')
+      const classPath = String(entry['graphClassPath'] ?? '')
+      return [{
+        key: `${String(index)}-${name}`,
+        text: classPath === '' ? name : `${name} — ${classPath}`,
+      }]
+    })
+    return (
+      <ListCard
+        summary={fillTemplate(tr('custom.listGraphs.summary'), { name: blueprint })}
+        rows={rows}
+        emptyText={tr('custom.listGraphs.empty')}
+      />
+    )
+  },
+})
+
+registerCardCustomization('unreal_get_graph_nodes', {
+  render: ({ operation, tr }) => {
+    if (!operation.ok) return undefined
+    const result = isRecordValue(operation.result) ? operation.result : undefined
+    if (result === undefined) return undefined
+    const graph = typeof result['graph'] === 'string' ? result['graph'] : ''
+    const nodes = Array.isArray(result['nodes']) ? result['nodes'] as unknown[] : []
+    const rows = nodes.flatMap((entry, index) => {
+      if (!isRecordValue(entry)) return []
+      const title = String(entry['nodeTitle'] ?? '')
+      const classPath = String(entry['nodeClassPath'] ?? '')
+      const member = String(entry['memberName'] ?? '')
+      return [{
+        key: `${String(index)}-${title}`,
+        text: `${title}${classPath === '' ? '' : ` — ${classPath}`}${member === '' ? '' : ` → ${member}`}`,
+      }]
+    })
+    return (
+      <ListCard
+        summary={fillTemplate(tr('custom.graphNodes.summary'), { name: graph })}
+        rows={rows}
+        emptyText={tr('custom.graphNodes.empty')}
+      />
+    )
+  },
+})
+
+registerCardCustomization('unreal_get_dirty_assets', {
+  render: ({ operation, tr }) => {
+    if (!operation.ok) return undefined
+    const result = isRecordValue(operation.result) ? operation.result : undefined
+    if (result === undefined) return undefined
+    const dirty = Array.isArray(result['dirty']) ? result['dirty'] as unknown[] : []
+    const rows = dirty.flatMap((entry, index) => {
+      if (!isRecordValue(entry)) return []
+      const packageName = String(entry['packageName'] ?? '')
+      const paths = Array.isArray(entry['assetPaths']) ? entry['assetPaths'].map(String) : []
+      const mapSuffix = entry['isMap'] === true ? tr('custom.dirtyAssets.mapSuffix') : ''
+      return [{
+        key: `${String(index)}-${packageName}`,
+        text: `${packageName}${mapSuffix}${paths.length === 0 ? '' : ` — ${paths.join(', ')}`}`,
+      }]
+    })
+    return (
+      <ListCard
+        summary={tr('custom.dirtyAssets.summary')}
+        rows={rows}
+        emptyText={tr('custom.dirtyAssets.empty')}
+      />
+    )
+  },
 })
 
 /**

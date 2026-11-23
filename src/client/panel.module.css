@@ -1601,13 +1601,124 @@
   background: rgba(128, 128, 128, 0.08);
   font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 10.5px;
+  max-height: 420px;
+  overflow-y: auto;
 }
 
 .customListRow {
   overflow-wrap: anywhere;
 }
 
-/* A log page: one padded data block, one row per entry. */
+/* A generated-code block (TypeScript-like graph pseudocode). */
+.codeBlock {
+  position: relative;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.08);
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 10.5px;
+  line-height: 1.45;
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.codeVirtualSpacer {
+  position: relative;
+  min-width: 100%;
+}
+
+.codeRow {
+  position: absolute;
+  left: 0;
+  display: flex;
+  align-items: center;
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  white-space: pre;
+}
+
+.codeFoldRow {
+  cursor: pointer;
+}
+
+.codeFoldRow:hover {
+  background: rgba(128, 128, 128, 0.08);
+}
+
+.codeLineNo {
+  flex: 0 0 auto;
+  padding-right: 0.8ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.35;
+  user-select: none;
+}
+
+.codeGutter {
+  display: flex;
+  flex: 0 0 14px;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 100%;
+  opacity: 0.42;
+  user-select: none;
+}
+
+.codeChevron {
+  display: block;
+  flex: none;
+  width: 8px;
+  height: 10px;
+  transition: transform 120ms ease;
+}
+
+.codeText {
+  white-space: pre;
+}
+
+.codeFoldMeta {
+  align-self: center;
+  margin-left: 0.8ch;
+  opacity: 0.45;
+  font-size: 9.5px;
+}
+
+.tsComment {
+  opacity: 0.55;
+  font-style: italic;
+}
+
+.tsString {
+  color: #3f8f52;
+}
+
+.tsNumber {
+  color: #b8741a;
+}
+
+.tsKeyword {
+  color: #8e5fbf;
+}
+
+.tsType {
+  color: #4f7cff;
+}
+
+.tsFunction {
+  color: #b8741a;
+}
 .logList {
   display: flex;
   flex-direction: column;
