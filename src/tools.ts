@@ -25,6 +25,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 
 import type { ResolvedConfig } from './config.ts'
+import { convertBlueprintToTypeScript } from './graph-typescript.ts'
+import type { BlueprintGraphStructure } from './graph-typescript.ts'
 import { captureRcCall, withRcCapture, type RcCallSnapshot } from './audit-capture.ts'
 import { buildRcCallDetails } from './details.ts'
 import type { CallDetails, DetailsDeps } from './details.ts'
@@ -134,7 +136,8 @@ export const OWNED_TOOLS: ReadonlySet<string> = new Set([
   'unreal_save_current_level',
   'unreal_get_blueprint_graphs',
   'unreal_get_graph_nodes',
-  'unreal_convert_graph_to_typescript',
+  'unreal_convert_blueprint_to_typescript',
+  'unreal_get_blueprint_graph_structure',
   'unreal_get_node_pins',
   'unreal_add_call_function_node',
   'unreal_add_event_node',
@@ -2801,11 +2804,11 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
   }))
 
   ctx.tools.register(defineTool({
-    name: 'unreal_convert_graph_to_typescript',
+    name: 'unreal_convert_blueprint_to_typescript',
     description:
-      'Convert one regular Blueprint (K2) graph to compact TypeScript-like pseudocode. Supports event/function entries, exec chains, Branch, Sequence, Switch, function calls with named arguments, variable reads/writes, Select, Cast, Make/BreakStruct, GetArrayItem, CreateWidget/SpawnActor and literals; unsupported nodes become comments. Animation and material graphs are rejected because their execution models differ. Returns nodeCount, lineCount and the rendered text.',
+      'Convert a whole regular Blueprint (K2) to compact TypeScript-like pseudocode as one class: every supported ubergraph page and function graph is merged into the same class, instead of rendering only its EventGraph. Supports event/function entries, exec chains, Branch, Sequence, Switch, loop macros, function calls, variables, delegates, Select, Cast, Make/BreakStruct, GetArrayItem, CreateWidget/SpawnActor and literals; unsupported nodes become comments. Animation and material graphs are skipped. Returns nodeCount, lineCount and the rendered text.',
     parameters: {
-      graph: { type: 'string', required: true, description: 'Graph object path (from unreal_get_blueprint_graphs).' },
+      blueprint: { type: 'string', required: true, description: 'Blueprint asset path (/Game/Dir/BP) or object path.' },
       recursive: { type: 'boolean', description: 'Also include nodes of macro and collapsed sub-graphs in nodeCount; default true.' },
     },
     output: {
@@ -2813,7 +2816,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
         type: 'object',
         additionalProperties: true,
         properties: {
-          graph: { type: 'string', required: true },
+          blueprint: { type: 'string', required: true },
           nodeCount: { type: 'integer', required: true },
           lineCount: { type: 'integer', required: true },
           typescript: { type: 'string', required: true },
@@ -2823,22 +2826,103 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
       render: (_args, value) => [{ type: 'text', text: String(value.typescript) }],
     },
     async execute(args, exec) {
-      const graph = requiredString(args.graph, 'graph')
+      const blueprint = requiredString(args.blueprint, 'blueprint')
       const recursive = args.recursive !== false
-      return await audited(deps, exec, { tool: 'unreal_convert_graph_to_typescript', params: { graph, recursive } }, async () => {
+      return await audited(deps, exec, { tool: 'unreal_convert_blueprint_to_typescript', params: { blueprint, recursive } }, async () => {
         const result = await invokeEditorAutomation(
           deps,
           exec.signal,
           EDITOR_AUTOMATION_LIBRARIES.graph,
-          'ConvertGraphToTypeScript',
-          { Graph: graph, bRecursive: recursive },
+          'GetBlueprintGraphStructure',
+          { Blueprint: blueprint },
         )
-        const nodeCount = Number(structNumber(result.payload, 'OutNodeCount') ?? 0)
-        const lineCount = Number(structNumber(result.payload, 'OutLineCount') ?? 0)
-        const typescript = structString(result.payload, 'OutTypescript')
+        const raw = typeof result.payload === 'string' ? result.payload : structString(result.payload, 'OutStructureJson')
+        let structure: BlueprintGraphStructure
+        try {
+          structure = JSON.parse(raw) as BlueprintGraphStructure
+        } catch (error) {
+          throw new KitError('rc/bad-response', 'GetBlueprintGraphStructure returned invalid JSON.', {
+            detail: error instanceof Error ? error.message : String(error),
+          })
+        }
+        const typescript = convertBlueprintToTypeScript(structure)
+        const nodeCount = structure.graphs.reduce((count, graph) => count + graph.nodes.length, 0)
+        const lineCount = typescript.endsWith('\n') ? typescript.slice(0, -1).split('\n').length : typescript.split('\n').length
         return {
-          value: { graph, nodeCount, lineCount, typescript, recursive, functionName: 'ConvertGraphToTypeScript' },
+          value: { blueprint, nodeCount, lineCount, typescript, recursive, functionName: 'convertBlueprintToTypeScript' },
           resultSummary: `${nodeCount} nodes, ${lineCount} lines`,
+        }
+      })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_get_blueprint_graph_structure',
+    description:
+      'Return the full graph structure of one Blueprint as a JSON model for converters running outside the editor: all ubergraph pages and function graphs, nodes, pins, links, function signatures, variable scope, macro and struct metadata. This is the bulk data source for the TypeScript converter; use unreal_convert_blueprint_to_typescript when you only want the converted code.',
+    parameters: {
+      blueprint: { type: 'string', required: true, description: 'Blueprint asset path (/Game/Dir/BP) or object path.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          blueprint: { type: 'string', required: true },
+          structure: { type: 'object', additionalProperties: true, properties: {}, required: true },
+          graphCount: { type: 'integer', required: true },
+          nodeCount: { type: 'integer', required: true },
+          functionName: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => {
+        const structure = typeof value.structure === 'object' && value.structure !== null && !Array.isArray(value.structure)
+          ? value.structure as Record<string, JsonValue>
+          : {}
+        const graphs = Array.isArray(structure['graphs']) ? structure['graphs'] : []
+        const names = graphs.flatMap(graph => typeof graph === 'object' && graph !== null && !Array.isArray(graph) && typeof (graph as Record<string, JsonValue>)['name'] === 'string' ? [(graph as Record<string, JsonValue>)['name'] as string] : [])
+        return [{
+          type: 'text',
+          text: `Blueprint graph structure: ${String(value.graphCount)} graphs, ${String(value.nodeCount)} nodes${names.length === 0 ? '' : `\n${names.join('\n')}`}`,
+        }]
+      },
+    },
+    async execute(args, exec) {
+      const blueprint = requiredString(args.blueprint, 'blueprint')
+      return await audited(deps, exec, { tool: 'unreal_get_blueprint_graph_structure', params: { blueprint } }, async () => {
+        const result = await invokeEditorAutomation(
+          deps,
+          exec.signal,
+          EDITOR_AUTOMATION_LIBRARIES.graph,
+          'GetBlueprintGraphStructure',
+          { Blueprint: blueprint },
+        )
+        const raw = typeof result.payload === 'string' ? result.payload : structString(result.payload, 'OutStructureJson')
+        let structure: Record<string, JsonValue>
+        try {
+          structure = JSON.parse(raw) as Record<string, JsonValue>
+        } catch (error) {
+          throw new KitError('rc/bad-response', 'GetBlueprintGraphStructure returned invalid JSON.', {
+            detail: error instanceof Error ? error.message : String(error),
+          })
+        }
+        const graphList = Array.isArray(structure['graphs']) ? structure['graphs'] as unknown[] : []
+        const nodeCount = graphList.reduce((count: number, graph) => {
+          const nodes = typeof graph === 'object' && graph !== null && !Array.isArray(graph)
+            && Array.isArray((graph as Record<string, JsonValue>)['nodes'])
+            ? (graph as Record<string, JsonValue>)['nodes'] as unknown[]
+            : []
+          return count + nodes.length
+        }, 0)
+        return {
+          value: {
+            blueprint,
+            structure,
+            graphCount: graphList.length,
+            nodeCount,
+            functionName: 'GetBlueprintGraphStructure',
+          },
+          resultSummary: `${graphList.length} graphs, ${nodeCount} nodes`,
         }
       })
     },

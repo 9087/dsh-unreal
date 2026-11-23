@@ -18,7 +18,7 @@ import type { ReactNode } from 'react'
 import css from './panel.module.css'
 import { FailureNotice } from './card-failure.tsx'
 import { CallsDetails, DefaultDetailsView, KeyValueRows, ListCard, PropertyChangeSection, PropertyValueSection, RcCallDetails, ScreenshotSection } from './details-view.tsx'
-import type { Tr } from './details-view.tsx'
+import type { ListCardRow, Tr } from './details-view.tsx'
 import { typeLeaf } from './format.ts'
 import { TypeScriptCodeBlock } from './typescript-code.tsx'
 import { typeLabel } from './type-label.ts'
@@ -752,7 +752,7 @@ registerCardCustomization('unreal_open_level', {
   render: () => undefined,
 })
 
-registerCardCustomization('unreal_convert_graph_to_typescript', {
+registerCardCustomization('unreal_convert_blueprint_to_typescript', {
   render: ({ operation, tr }) => {
     if (!operation.ok) return undefined
     const result = isRecordValue(operation.result) ? operation.result : undefined
@@ -819,6 +819,91 @@ registerCardCustomization('unreal_get_graph_nodes', {
         summary={fillTemplate(tr('custom.graphNodes.summary'), { name: graph })}
         rows={rows}
         emptyText={tr('custom.graphNodes.empty')}
+      />
+    )
+  },
+})
+
+registerCardCustomization('unreal_get_blueprint_graph_structure', {
+  render: ({ operation, tr }) => {
+    if (!operation.ok) return undefined
+    const result = isRecordValue(operation.result) ? operation.result : undefined
+    const structure = result !== undefined && isRecordValue(result['structure']) ? result['structure'] : undefined
+    if (structure === undefined) return undefined
+    const blueprint = typeof result?.['blueprint'] === 'string' ? result['blueprint'] : ''
+    const className = typeof structure['className'] === 'string' ? structure['className'] : ''
+    const parentClassName = typeof structure['parentClassName'] === 'string' ? structure['parentClassName'] : ''
+    const variables = Array.isArray(structure['variables']) ? structure['variables'] : []
+    const graphs = Array.isArray(structure['graphs']) ? structure['graphs'] as unknown[] : []
+    const skipped = Array.isArray(structure['skippedGraphs']) ? structure['skippedGraphs'] : []
+    const rows: ListCardRow[] = []
+    if (className !== '') {
+      rows.push({
+        key: 'class',
+        text: parentClassName === '' ? className : `${className} extends ${parentClassName}`,
+      })
+    }
+    if (variables.length > 0) {
+      rows.push({
+        key: 'variables',
+        text: fillTemplate(tr('custom.graphStructure.variables'), { count: String(variables.length) }),
+      })
+    }
+    graphs.forEach((entry, index) => {
+      if (!isRecordValue(entry)) return
+      const name = String(entry['name'] ?? '')
+      const kind = entry['kind'] === 'function' ? tr('custom.graphStructure.function') : tr('custom.graphStructure.ubergraph')
+      const nodes = Array.isArray(entry['nodes']) ? entry['nodes'].length : 0
+      rows.push({
+        key: `graph-${String(index)}-${name}`,
+        text: `${name} — ${kind} · ${fillTemplate(tr('custom.graphStructure.nodes'), { count: String(nodes) })}`,
+      })
+    })
+    skipped.forEach((entry, index) => {
+      rows.push({
+        key: `skipped-${String(index)}`,
+        text: fillTemplate(tr('custom.graphStructure.skipped'), { name: String(entry) }),
+      })
+    })
+    return (
+      <ListCard
+        summary={fillTemplate(tr('custom.graphStructure.summary'), { name: blueprint })}
+        rows={rows}
+        emptyText={tr('custom.graphStructure.empty')}
+      />
+    )
+  },
+})
+
+registerCardCustomization('unreal_get_node_pins', {
+  render: ({ operation, tr }) => {
+    if (!operation.ok) return undefined
+    const result = isRecordValue(operation.result) ? operation.result : undefined
+    if (result === undefined) return undefined
+    const node = typeof result['node'] === 'string' ? result['node'] : ''
+    const pins = Array.isArray(result['pins']) ? result['pins'] as unknown[] : []
+    const rows = pins.flatMap((entry, index) => {
+      if (!isRecordValue(entry)) return []
+      const name = String(entry['pinName'] ?? '')
+      const direction = String(entry['direction'] ?? '')
+      const type = String(entry['pinType'] ?? '')
+      const defaultValue = String(entry['defaultValue'] ?? '')
+      const defaultObjectPath = String(entry['defaultObjectPath'] ?? '')
+      const connections = Array.isArray(entry['connections']) ? entry['connections'].map(String) : []
+      const details: string[] = []
+      if (defaultValue !== '') details.push(`= ${defaultValue}`)
+      else if (defaultObjectPath !== '') details.push(`= ${defaultObjectPath}`)
+      if (entry['linked'] === true) details.push(connections.length === 0 ? '→ linked' : `→ ${connections.join(', ')}`)
+      return [{
+        key: `${String(index)}-${name}`,
+        text: `${name} [${direction}] ${type}${details.length === 0 ? '' : ` — ${details.join(' ')}`}`,
+      }]
+    })
+    return (
+      <ListCard
+        summary={fillTemplate(tr('custom.nodePins.summary'), { name: node })}
+        rows={rows}
+        emptyText={tr('custom.nodePins.empty')}
       />
     )
   },

@@ -286,9 +286,17 @@ function composeActionTitle(operation: OperationView, tr: Tr): string {
       const graph = paramText(operation, 'graph') ?? ''
       return graph === '' ? tr('tool.get_graph_nodes') : fill(tr('card.listGraphNodes'), { name: graph })
     }
-    case 'unreal_convert_graph_to_typescript': {
-      const graph = paramText(operation, 'graph') ?? ''
-      return graph === '' ? tr('tool.convert_graph_to_typescript') : fill(tr('card.convertGraphToTypeScript'), { name: graph })
+    case 'unreal_get_blueprint_graph_structure': {
+      const blueprint = paramText(operation, 'blueprint') ?? ''
+      return blueprint === '' ? tr('tool.get_blueprint_graph_structure') : fill(tr('card.getBlueprintGraphStructure'), { name: blueprint })
+    }
+    case 'unreal_get_node_pins': {
+      const node = paramText(operation, 'node') ?? ''
+      return node === '' ? tr('tool.get_node_pins') : fill(tr('card.listNodePins'), { name: node })
+    }
+    case 'unreal_convert_blueprint_to_typescript': {
+      const blueprint = paramText(operation, 'blueprint') ?? ''
+      return blueprint === '' ? tr('tool.convert_blueprint_to_typescript') : fill(tr('card.convertBlueprintToTypeScript'), { name: blueprint })
     }
     case 'unreal_open_level': {
       const params = operation.params !== null && typeof operation.params === 'object' && !Array.isArray(operation.params)

@@ -163,13 +163,13 @@ function result(overrides: Record<string, unknown>): Record<string, unknown> {
 }
 
 describe('registerTools', () => {
-  it('registers exactly the ninety-two EditorAutomation tools', () => {
+  it('registers exactly the ninety-three EditorAutomation tools', () => {
     const tools = new Map<string, ToolDef>()
     const store = new RecordingStore()
     registerTools(fakeHost(tools), makeDeps(kitFetch([{}]), store))
 
     assert.deepEqual([...tools.keys()].sort(), [...OWNED_TOOLS].sort())
-    assert.equal(tools.size, 92)
+    assert.equal(tools.size, 93)
     assert.ok(tools.has('unreal_get_editor_info'))
     assert.ok(tools.has('unreal_focus_pie'))
     assert.ok(tools.has('unreal_send_key'))
@@ -182,7 +182,8 @@ describe('registerTools', () => {
     assert.ok(tools.has('unreal_screenshot'))
     assert.ok(tools.has('unreal_get_recent_log'))
     assert.ok(tools.has('unreal_get_blueprint_graphs'))
-    assert.ok(tools.has('unreal_convert_graph_to_typescript'))
+    assert.ok(tools.has('unreal_convert_blueprint_to_typescript'))
+    assert.ok(tools.has('unreal_get_blueprint_graph_structure'))
     assert.ok(tools.has('unreal_connect_pins'))
     assert.ok(tools.has('unreal_save_current_level'))
     assert.ok(tools.has('unreal_open_level'))
