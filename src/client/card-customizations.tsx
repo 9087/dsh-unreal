@@ -737,6 +737,21 @@ registerCardCustomization('unreal_get_widget_roots', {
   },
 })
 
+registerCardCustomization('unreal_save_blueprint', {
+  // The title carries the saved Blueprint path; no extra body is useful.
+  render: () => undefined,
+})
+
+registerCardCustomization('unreal_remove_graph_node', {
+  // The title carries the removed node path; no extra body is useful.
+  render: () => undefined,
+})
+
+registerCardCustomization('unreal_compile_blueprint', {
+  // The title already carries the Blueprint path; a successful compile needs no body.
+  render: () => undefined,
+})
+
 registerCardCustomization('unreal_set_tool_groups', {
   // The title says which groups were enabled/disabled; there is no body to add.
   render: () => undefined,

@@ -294,6 +294,18 @@ function composeActionTitle(operation: OperationView, tr: Tr): string {
       const node = paramText(operation, 'node') ?? ''
       return node === '' ? tr('tool.get_node_pins') : fill(tr('card.listNodePins'), { name: node })
     }
+    case 'unreal_save_blueprint': {
+      const blueprint = paramText(operation, 'blueprint') ?? ''
+      return blueprint === '' ? tr('tool.save_blueprint') : fill(tr('card.saveBlueprint'), { name: blueprint })
+    }
+    case 'unreal_remove_graph_node': {
+      const node = paramText(operation, 'node') ?? ''
+      return node === '' ? tr('tool.remove_graph_node') : fill(tr('card.removeGraphNode'), { name: node })
+    }
+    case 'unreal_compile_blueprint': {
+      const blueprint = paramText(operation, 'blueprint') ?? ''
+      return blueprint === '' ? tr('tool.compile_blueprint') : fill(tr('card.compileBlueprint'), { name: blueprint })
+    }
     case 'unreal_convert_blueprint_to_typescript': {
       const blueprint = paramText(operation, 'blueprint') ?? ''
       return blueprint === '' ? tr('tool.convert_blueprint_to_typescript') : fill(tr('card.convertBlueprintToTypeScript'), { name: blueprint })

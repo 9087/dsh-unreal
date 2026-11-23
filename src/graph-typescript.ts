@@ -43,6 +43,7 @@ export interface GraphStructureFunction {
   readonly ownerClassPath: string
   readonly ownerCppName: string
   readonly static: boolean
+  readonly latent?: boolean
   readonly parameters: readonly GraphStructureFunctionParameter[]
 }
 
@@ -71,6 +72,7 @@ export interface GraphStructureNode {
   readonly subGraphObjectPath?: string
   readonly subGraph?: GraphStructureSubGraph
   readonly timelineName?: string
+  readonly mathExpression?: string
   readonly structTypePath?: string
   readonly structTypeName?: string
   readonly castTargetPath?: string
@@ -156,12 +158,16 @@ function asyncNode(node: GraphStructureNode): boolean {
 /** Render one Blueprint graph structure to TypeScript-like pseudocode. */
 export class BlueprintTypeScriptConverter {
   private readonly nodes = new Map<string, GraphStructureNode>()
-  private readonly lines: string[] = []
+  private lines: string[] = []
   private readonly visited = new Set<string>()
   private readonly overrides = new Map<string, string>()
   private readonly expressionCache = new Map<string, string>()
   private readonly expressionBusy = new Set<string>()
   private readonly compositeContexts: Array<{ exitGuid: string }> = []
+  private readonly stateMembers = new Map<string, { type: 'boolean' | 'number'; initial: string }>()
+  private readonly nodeStateNames = new Map<string, string>()
+  private readonly helpers = new Set<string>()
+  private readonly reservedNames = new Set<string>()
   private tempIndex = 0
   private truncated = false
 
@@ -181,18 +187,144 @@ export class BlueprintTypeScriptConverter {
 
   /** Render the whole Blueprint class. */
   convert(): string {
+    this.stateMembers.clear()
+    this.nodeStateNames.clear()
+    this.helpers.clear()
+    this.reservedNames.clear()
+    for (const variable of this.structure.variables) this.reservedNames.add(variable.name)
+    for (const graph of this.structure.graphs) {
+      for (const node of graph.nodes) {
+        if (this.isEventEntry(node)) this.reservedNames.add(this.eventMethodName(node, graph))
+        else if (node.className === 'K2Node_FunctionEntry') this.reservedNames.add(graph.name)
+      }
+    }
+
+    // Render methods first so macro state/helpers are known before the class header.
+    const classLines = this.lines
+    this.lines = []
+    this.appendMethods()
+    const methodLines = this.lines
+    this.lines = classLines
     this.lines.length = 0
+
     this.lines.push(`// Blueprint: ${this.structure.blueprintPath}`)
     const graphNames = this.structure.graphs.map(graph => graph.name)
     this.lines.push(`// Graphs: ${graphNames.join(', ')}`)
     if (this.structure.skippedGraphs.length > 0) {
       this.lines.push(`// Skipped (unsupported graph schema): ${this.structure.skippedGraphs.join(', ')}`)
     }
+    this.appendMacrosObject()
     this.lines.push(`class ${this.structure.className} extends ${this.structure.parentClassName} {`)
     this.appendVariables()
-    this.appendMethods()
+    this.appendGeneratedState()
+    this.lines.push(...methodLines)
     this.lines.push('}')
     return this.lines.join('\n')
+  }
+
+  private appendMacrosObject(): void {
+    if (this.helpers.size === 0) return
+    this.lines.push('// #region macros')
+    this.lines.push('const Macros = {')
+    if (this.helpers.has('DoOnce')) {
+      this.lines.push('  DoOnce(state: { value: boolean }, body: () => void): void {')
+      this.lines.push('    if (state.value) return;')
+      this.lines.push('    state.value = true;')
+      this.lines.push('    body();')
+      this.lines.push('  },')
+    }
+    if (this.helpers.has('ResetFlag')) {
+      this.lines.push('  ResetFlag(state: { value: boolean }): void { state.value = false; },')
+    }
+    if (this.helpers.has('GateOpen')) {
+      this.lines.push('  GateOpen(state: { value: boolean }): void { state.value = true; },')
+    }
+    if (this.helpers.has('GateClose')) {
+      this.lines.push('  GateClose(state: { value: boolean }): void { state.value = false; },')
+    }
+    if (this.helpers.has('GateToggle')) {
+      this.lines.push('  GateToggle(state: { value: boolean }): void { state.value = !state.value; },')
+    }
+    if (this.helpers.has('GateEnter')) {
+      this.lines.push('  GateEnter(state: { value: boolean }, body: () => void): void {')
+      this.lines.push('    if (state.value) body();')
+      this.lines.push('  },')
+    }
+    if (this.helpers.has('FlipFlop')) {
+      this.lines.push('  FlipFlop(state: { value: boolean }, onA: () => void, onB: () => void): void {')
+      this.lines.push('    state.value = !state.value;')
+      this.lines.push('    if (state.value) onA(); else onB();')
+      this.lines.push('  },')
+    }
+    if (this.helpers.has('DoN')) {
+      this.lines.push('  DoN(state: { value: number }, limit: number, body: () => void): void {')
+      this.lines.push('    if (state.value >= limit) return;')
+      this.lines.push('    state.value += 1;')
+      this.lines.push('    body();')
+      this.lines.push('  },')
+    }
+    if (this.helpers.has('DoNReset')) {
+      this.lines.push('  DoNReset(state: { value: number }): void { state.value = 0; },')
+    }
+    if (this.helpers.has('RequestBreak')) {
+      this.lines.push('  RequestBreak(state: { value: boolean }): void { state.value = true; },')
+    }
+    if (this.helpers.has('ForLoopWithBreak')) {
+      this.lines.push('  ForLoopWithBreak(first: number, last: number, breakState: { value: boolean }, body: (index: number) => void): void {')
+      this.lines.push('    for (let index = first; index <= last; index++) {')
+      this.lines.push('      if (breakState.value) { breakState.value = false; break; }')
+      this.lines.push('      body(index);')
+      this.lines.push('    }')
+      this.lines.push('  },')
+    }
+    if (this.helpers.has('ForEachWithBreak')) {
+      this.lines.push('  ForEachWithBreak<T>(array: T[], breakState: { value: boolean }, body: (item: T, index: number) => void): void {')
+      this.lines.push('    for (const [index, item] of array.entries()) {')
+      this.lines.push('      if (breakState.value) { breakState.value = false; break; }')
+      this.lines.push('      body(item, index);')
+      this.lines.push('    }')
+      this.lines.push('  },')
+    }
+    this.lines.push('};')
+    this.lines.push('// #endregion')
+  }
+
+  private appendGeneratedState(): void {
+    if (this.stateMembers.size === 0) return
+    this.lines.push('  // #region generated state')
+    for (const [name, state] of this.stateMembers) {
+      this.lines.push(`  ${name}: { value: ${state.type} } = { value: ${state.initial} }`)
+    }
+    this.lines.push('  // #endregion')
+  }
+
+  private macroStateName(
+    node: GraphStructureNode,
+    kind: string,
+    type: 'boolean' | 'number' = 'boolean',
+    initial = 'false',
+  ): string {
+    const prefix: Record<string, string> = {
+      DoOnce: 'DoOnceFlag',
+      Gate: 'GateFlag',
+      FlipFlop: 'FlipFlopFlag',
+      DoN: 'DoNCount',
+      Break: 'BreakFlag',
+    }
+    const stateKey = `${node.guid}:${kind}`
+    const existing = this.nodeStateNames.get(stateKey)
+    if (existing !== undefined) return existing
+    const base = `${prefix[kind] ?? kind}_${node.guid.slice(0, 8)}`
+    let name = base
+    let suffix = 1
+    while (this.reservedNames.has(name)) {
+      name = `${base}_${String(suffix)}`
+      suffix += 1
+    }
+    this.reservedNames.add(name)
+    this.nodeStateNames.set(stateKey, `this.${name}`)
+    this.stateMembers.set(name, { type, initial })
+    return `this.${name}`
   }
 
   private line(text: string, indent: number): void {
@@ -239,12 +371,20 @@ export class BlueprintTypeScriptConverter {
       return
     }
     this.lines.push('  // #region methods')
+    const renderedNames = new Set<string>()
     for (const graph of this.structure.graphs) {
       for (const node of graph.nodes) {
-        if (this.isEventEntry(node)) this.renderMethod(node, this.eventMethodName(node, graph))
+        if (!this.isEventEntry(node)) continue
+        const name = this.eventMethodName(node, graph)
+        if (renderedNames.has(name)) continue
+        renderedNames.add(name)
+        this.renderMethod(node, name)
       }
       for (const node of graph.nodes) {
-        if (node.className === 'K2Node_FunctionEntry') this.renderMethod(node, graph.name)
+        if (node.className !== 'K2Node_FunctionEntry') continue
+        if (renderedNames.has(graph.name)) continue
+        renderedNames.add(graph.name)
+        this.renderMethod(node, graph.name)
       }
     }
     this.lines.push('  // #endregion')
@@ -257,11 +397,16 @@ export class BlueprintTypeScriptConverter {
     this.expressionBusy.clear()
     this.tempIndex = 0
     const params = this.entryParameters(entry).join(', ')
+    const startIndex = this.lines.length
     this.line(`${name}(${params}) {`, 1)
     for (const pin of entry.pins) {
       if (pin.direction === 'output' && pin.category === 'exec') this.renderExecOutput(pin, 2)
     }
     this.line('}', 1)
+    const body = this.lines.slice(startIndex + 1)
+    if (body.some(line => line.includes('await '))) {
+      this.lines[startIndex] = `${INDENT}async ${name}(${params}) {`
+    }
   }
 
   private entryParameters(entry: GraphStructureNode): string[] {
@@ -302,26 +447,27 @@ export class BlueprintTypeScriptConverter {
     return node.pins.filter(pin => pin.direction === 'input' && pin.category !== 'exec' && pin.category !== 'delegate')
   }
 
-  private targetNodes(pin: GraphStructurePin): GraphStructureNode[] {
-    const result: GraphStructureNode[] = []
+  private targets(pin: GraphStructurePin): Array<{ node: GraphStructureNode; pinName: string }> {
+    const result: Array<{ node: GraphStructureNode; pinName: string }> = []
     for (const connection of pin.connections) {
       const parsed = parseConnection(connection)
       if (parsed === undefined) continue
       const node = this.nodes.get(parsed.guid)
-      if (node !== undefined) result.push(node)
+      if (node !== undefined) result.push({ node, pinName: parsed.pin })
     }
     return result
   }
 
   private renderExecOutput(pin: GraphStructurePin | undefined, indent: number): void {
     if (pin === undefined) return
-    for (const node of this.targetNodes(pin)) this.renderExecNode(node, indent)
+    for (const target of this.targets(pin)) this.renderExecNode(target.node, indent, target.pinName)
   }
 
-  private renderExecNode(node: GraphStructureNode, indent: number): void {
+  private renderExecNode(node: GraphStructureNode, indent: number, arrivedPin?: string): void {
     if (this.compositeContexts.some(context => context.exitGuid === node.guid)) return
-    if (this.visited.has(node.guid)) return
-    this.visited.add(node.guid)
+    const visitKey = arrivedPin === undefined ? node.guid : `${node.guid}::${arrivedPin}`
+    if (this.visited.has(visitKey)) return
+    this.visited.add(visitKey)
     if (node.comment.trim() !== '') this.line(`// ${node.comment.replaceAll('\n', ' ')}`, indent)
     const className = node.className
 
@@ -344,13 +490,14 @@ export class BlueprintTypeScriptConverter {
     }
     if (this.isKindOf(node, 'K2Node_CallFunction')) {
       const call = this.callExpression(node)
+      const awaitPrefix = node.function?.latent === true ? 'await ' : ''
       const returnPin = node.pins.find(pin => pin.direction === 'output' && pin.category !== 'exec')
       if (returnPin !== undefined && returnPin.connections.length > 0) {
         const variable = `T${++this.tempIndex}`
-        this.line(`const ${variable} = ${call};`, indent)
+        this.line(`const ${variable} = ${awaitPrefix}${call};`, indent)
         this.overrides.set(`${node.guid}::${returnPin.name}`, variable)
       } else {
-        this.line(`${call};`, indent)
+        this.line(`${awaitPrefix}${call};`, indent)
       }
       for (const pin of this.execOutputs(node)) this.renderExecOutput(pin, indent)
       return
@@ -372,7 +519,7 @@ export class BlueprintTypeScriptConverter {
       return
     }
     if (this.isKindOf(node, 'K2Node_MacroInstance')) {
-      this.renderMacro(node, indent)
+      this.renderMacro(node, indent, arrivedPin)
       return
     }
     if (this.isKindOf(node, 'K2Node_Composite')) {
@@ -381,6 +528,22 @@ export class BlueprintTypeScriptConverter {
     }
     if (this.isKindOf(node, 'K2Node_Timeline')) {
       this.renderTimeline(node, indent)
+      return
+    }
+    if (this.isKindOf(node, 'K2Node_StructMemberSet')) {
+      this.renderStructMemberSet(node, indent)
+      return
+    }
+    if (this.isKindOf(node, 'K2Node_SetFieldsInStruct')) {
+      this.renderSetFieldsInStruct(node, indent)
+      return
+    }
+    if (this.isKindOf(node, 'K2Node_GetDataTableRow')) {
+      this.renderDataTableRow(node, indent)
+      return
+    }
+    if (this.isKindOf(node, 'K2Node_MathExpression')) {
+      this.renderComposite(node, indent)
       return
     }
     if (asyncNode(node)) {
@@ -430,7 +593,82 @@ export class BlueprintTypeScriptConverter {
   }
 
   private isConstructNode(node: GraphStructureNode): boolean {
-    return node.className.includes('CreateWidget') || node.className.includes('SpawnActor')
+    return this.isKindOf(node, 'K2Node_ConstructObjectFromClass')
+  }
+
+  private renderStructMemberSet(node: GraphStructureNode, indent: number): void {
+    const name = node.variableName ?? ''
+    if (name === '') {
+      this.line(`// set struct fields: ${node.title}`, indent)
+      for (const pin of this.execOutputs(node)) this.renderExecOutput(pin, indent)
+      return
+    }
+    const prefix = node.localScope === true ? '' : 'this.'
+    for (const pin of this.nonExecInputs(node)) {
+      if (pin.name === 'self' || pin.name === 'Target') continue
+      this.line(`${prefix}${name}.${pin.name} = ${this.exprForPin(pin, 0)};`, indent)
+    }
+    for (const pin of this.execOutputs(node)) this.renderExecOutput(pin, indent)
+  }
+
+  private renderDataTableRow(node: GraphStructureNode, indent: number): void {
+    const dataTable = this.findPin(node, 'DataTable', 'input')
+    const rowName = this.findPin(node, 'RowName', 'input')
+    const call = `GetDataTableRow(${this.exprForPin(dataTable, 0)}, ${this.exprForPin(rowName, 0)})`
+    const result = node.pins.find(pin => pin.direction === 'output' && pin.category !== 'exec')
+    if (result !== undefined && result.connections.length > 0) {
+      const variable = `T${++this.tempIndex}`
+      this.line(`const ${variable} = ${call};`, indent)
+      this.overrides.set(`${node.guid}::${result.name}`, variable)
+    } else {
+      this.line(`${call};`, indent)
+    }
+    for (const pin of this.execOutputs(node)) this.renderExecOutput(pin, indent)
+  }
+
+  private setFieldsExpression(node: GraphStructureNode): string {
+    const inputs = this.nonExecInputs(node)
+    const base = inputs.find(pin => /^(struct|value)$/i.test(pin.name))
+      ?? inputs.find(pin => pin.cppType === (node.structTypeName ?? ''))
+    const fields = inputs
+      .filter(pin => pin !== base && !pin.name.toLowerCase().includes('self'))
+      .map(pin => `${pin.name}: ${this.exprForPin(pin, 0)}`)
+    const baseExpression = base === undefined ? '' : `...(${this.exprForPin(base, 0)}), `
+    return `{ ${baseExpression}${fields.join(', ')} }`
+  }
+
+  private renderSetFieldsInStruct(node: GraphStructureNode, indent: number): void {
+    const expression = this.setFieldsExpression(node)
+    const result = node.pins.find(pin => pin.direction === 'output' && pin.category !== 'exec')
+    if (result !== undefined && result.connections.length > 0) {
+      const variable = `T${++this.tempIndex}`
+      this.line(`const ${variable} = ${expression};`, indent)
+      this.overrides.set(`${node.guid}::${result.name}`, variable)
+    } else {
+      this.line(`${expression};`, indent)
+    }
+    for (const pin of this.execOutputs(node)) this.renderExecOutput(pin, indent)
+  }
+
+  private makeContainerExpression(node: GraphStructureNode): string {
+    const className = node.className
+    if (className.includes('MakeMap')) {
+      const keys = this.nonExecInputs(node).filter(pin => /^key\s*\d+$/i.test(pin.name))
+      const values = this.nonExecInputs(node).filter(pin => /^value\s*\d+$/i.test(pin.name))
+      const pairs = keys.map((key, index) => `[${this.exprForPin(key, 0)}, ${this.exprForPin(values[index], 0)}]`)
+      if (pairs.length === 0) {
+        const inputs = this.nonExecInputs(node)
+        for (let index = 0; index + 1 < inputs.length; index += 2) {
+          pairs.push(`[${this.exprForPin(inputs[index], 0)}, ${this.exprForPin(inputs[index + 1], 0)}]`)
+        }
+      }
+      return `new Map([${pairs.join(', ')}])`
+    }
+    const values = this.nonExecInputs(node)
+      .filter(pin => /^\d+$/.test(pin.name))
+      .sort((left, right) => Number(left.name) - Number(right.name))
+      .map(pin => this.exprForPin(pin, 0))
+    return className.includes('MakeSet') ? `new Set([${values.join(', ')}])` : `[${values.join(', ')}]`
   }
 
   private renderDelegate(node: GraphStructureNode, indent: number): void {
@@ -476,7 +714,10 @@ export class BlueprintTypeScriptConverter {
       return `SpawnActor(${args.join(', ')})`
     }
     const outer = this.findPin(node, 'Outer', 'input') ?? this.findPin(node, 'self', 'input')
-    return `CreateWidget(${classExpr}, ${outer === undefined || outer.connections.length === 0 ? 'this' : this.exprForPin(outer, 0)})`
+    if (node.className.includes('CreateWidget')) {
+      return `CreateWidget(${classExpr}, ${outer === undefined || outer.connections.length === 0 ? 'this' : this.exprForPin(outer, 0)})`
+    }
+    return `NewObject(${classExpr})`
   }
 
   private exprForPin(pin: GraphStructurePin | undefined, depth: number): string {
@@ -530,6 +771,9 @@ export class BlueprintTypeScriptConverter {
     if (this.isKindOf(node, 'K2Node_GetArrayItem')) {
       return `(${this.exprForPin(this.findPin(node, 'Array', 'input'), depth + 1)})[${this.exprForPin(this.findPin(node, 'Dimension 1', 'input'), depth + 1)}]`
     }
+    if (this.isKindOf(node, 'K2Node_MakeContainer')) {
+      return this.makeContainerExpression(node)
+    }
     if (this.isKindOf(node, 'K2Node_MakeStruct')) {
       const fields = this.nonExecInputs(node).map(pin => `${pin.name}: ${this.exprForPin(pin, depth + 1)}`)
       return `${node.structTypeName ?? 'Struct'} { ${fields.join(', ')} }`
@@ -543,6 +787,9 @@ export class BlueprintTypeScriptConverter {
     }
     if (this.isKindOf(node, 'K2Node_EnumLiteral')) {
       return this.literalForPin(output)
+    }
+    if (this.isKindOf(node, 'K2Node_MathExpression') && node.mathExpression !== undefined && node.mathExpression !== '') {
+      return `(${node.mathExpression})`
     }
     if (this.isKindOf(node, 'K2Node_Self')) return 'this'
     if (this.isKindOf(node, 'K2Node_Literal')) return output.defaultObjectPath !== '' ? `Object(${quote(output.defaultObjectPath)})` : this.literalForPin(output)
@@ -584,6 +831,9 @@ export class BlueprintTypeScriptConverter {
     const args: { pin: GraphStructurePin; value: string; isDefault: boolean; isOmittable: boolean }[] = []
     for (const parameter of fn.parameters) {
       if (parameter.return) continue
+      const parameterName = parameter.name.toLowerCase()
+      if (parameterName === 'latentinfo' || parameterName === 'worldcontext' || parameterName === 'worldcontextobject') continue
+      if (parameter.cppType.includes('LatentActionInfo')) continue
       const pin = this.findPin(node, parameter.name, 'input')
       if (pin === undefined) continue
       const isDeclaredDefault = pin.connections.length === 0 && sameDeclaredDefault(pin, parameter.declaredDefault)
@@ -676,10 +926,81 @@ export class BlueprintTypeScriptConverter {
     }
   }
 
-  private renderMacro(node: GraphStructureNode, indent: number): void {
+  private renderMacro(node: GraphStructureNode, indent: number, arrivedPin?: string): void {
     const name = node.macroGraphName ?? node.title
     const body = this.findPin(node, 'LoopBody', 'output')
     const completed = this.findPin(node, 'Completed', 'output')
+    const arriving = (arrivedPin ?? '').toLowerCase()
+
+    if (name === 'DoOnce') {
+      const startClosed = (this.findPin(node, 'Start Closed', 'input')?.defaultValue ?? '').toLowerCase() === 'true'
+      const state = this.macroStateName(node, 'DoOnce', 'boolean', startClosed ? 'true' : 'false')
+      this.helpers.add('DoOnce')
+      if (arriving === 'reset') {
+        this.helpers.add('ResetFlag')
+        this.line(`Macros.ResetFlag(${state});`, indent)
+        return
+      }
+      this.line(`Macros.DoOnce(${state}, () => {`, indent)
+      this.renderExecOutput(completed, indent + 1)
+      this.line('});', indent)
+      return
+    }
+
+    if (name === 'Gate') {
+      const startClosed = (this.findPin(node, 'bStartClosed', 'input')?.defaultValue ?? '').toLowerCase() === 'true'
+      const state = this.macroStateName(node, 'Gate', 'boolean', startClosed ? 'false' : 'true')
+      const exit = this.findPin(node, 'Exit', 'output')
+      if (arriving === 'open') {
+        this.helpers.add('GateOpen')
+        this.line(`Macros.GateOpen(${state});`, indent)
+        return
+      }
+      if (arriving === 'close') {
+        this.helpers.add('GateClose')
+        this.line(`Macros.GateClose(${state});`, indent)
+        return
+      }
+      if (arriving === 'toggle') {
+        this.helpers.add('GateToggle')
+        this.line(`Macros.GateToggle(${state});`, indent)
+        return
+      }
+      this.helpers.add('GateEnter')
+      this.line(`Macros.GateEnter(${state}, () => {`, indent)
+      this.renderExecOutput(exit, indent + 1)
+      this.line('});', indent)
+      return
+    }
+
+    if (name === 'FlipFlop') {
+      const state = this.macroStateName(node, 'FlipFlop', 'boolean', 'false')
+      this.helpers.add('FlipFlop')
+      this.line(`Macros.FlipFlop(${state}, () => {`, indent)
+      this.renderExecOutput(this.findPin(node, 'A', 'output'), indent + 1)
+      this.line('}, () => {', indent)
+      this.renderExecOutput(this.findPin(node, 'B', 'output'), indent + 1)
+      this.line('});', indent)
+      return
+    }
+
+    if (name === 'Do N') {
+      const state = this.macroStateName(node, 'DoN', 'number', '0')
+      this.helpers.add('DoN')
+      const exit = this.findPin(node, 'Exit', 'output')
+      const countPin = this.findPin(node, 'Counter', 'output')
+      if (countPin !== undefined) this.overrides.set(`${node.guid}::${countPin.name}`, `${state}.value`)
+      if (arriving === 'reset') {
+        this.helpers.add('DoNReset')
+        this.line(`Macros.DoNReset(${state});`, indent)
+        return
+      }
+      this.line(`Macros.DoN(${state}, ${this.exprForPin(this.findPin(node, 'n', 'input'), 0)}, () => {`, indent)
+      this.renderExecOutput(exit, indent + 1)
+      this.line('});', indent)
+      return
+    }
+
     if (name.includes('ForEachLoop')) {
       const array = this.exprForPin(this.findPin(node, 'Array', 'input'), 0)
       const id = ++this.tempIndex
@@ -687,9 +1008,23 @@ export class BlueprintTypeScriptConverter {
       const index = `index${String(id)}`
       const elementPin = this.findPin(node, 'Array Element', 'output')
       const indexPin = this.findPin(node, 'Array Index', 'output')
+      const breakState = this.macroStateName(node, 'Break', 'boolean', 'false')
+      if (name.includes('WithBreak') && arriving === 'break') {
+        this.helpers.add('RequestBreak')
+        this.line(`Macros.RequestBreak(${breakState});`, indent)
+        return
+      }
       if (elementPin !== undefined) this.overrides.set(`${node.guid}::${elementPin.name}`, item)
       if (indexPin !== undefined) this.overrides.set(`${node.guid}::${indexPin.name}`, index)
       const iterable = name.includes('Reverse') ? `[...${array}].reverse()` : array
+      if (name.includes('WithBreak')) {
+        this.helpers.add('ForEachWithBreak')
+        this.line(`Macros.ForEachWithBreak(${iterable}, ${breakState}, (${item}, ${index}) => {`, indent)
+        this.renderExecOutput(body, indent + 1)
+        this.line('});', indent)
+        this.renderExecOutput(completed, indent)
+        return
+      }
       this.line(`for (const [${index}, ${item}] of ${iterable}.entries()) {`, indent)
       this.renderExecOutput(body, indent + 1)
       this.line('}', indent)
@@ -706,9 +1041,23 @@ export class BlueprintTypeScriptConverter {
     if (name.includes('ForLoop')) {
       const id = ++this.tempIndex
       const index = `loop${String(id)}`
-      this.line(`for (let ${index} = ${this.exprForPin(this.findPin(node, 'FirstIndex', 'input'), 0)}; ${index} <= ${this.exprForPin(this.findPin(node, 'LastIndex', 'input'), 0)}; ${index}++) {`, indent)
       const indexPin = this.findPin(node, 'Index', 'output')
       if (indexPin !== undefined) this.overrides.set(`${node.guid}::${indexPin.name}`, index)
+      if (name.includes('WithBreak')) {
+        const breakState = this.macroStateName(node, 'Break', 'boolean', 'false')
+        if (arriving === 'break') {
+          this.helpers.add('RequestBreak')
+          this.line(`Macros.RequestBreak(${breakState});`, indent)
+          return
+        }
+        this.helpers.add('ForLoopWithBreak')
+        this.line(`Macros.ForLoopWithBreak(${this.exprForPin(this.findPin(node, 'FirstIndex', 'input'), 0)}, ${this.exprForPin(this.findPin(node, 'LastIndex', 'input'), 0)}, ${breakState}, (${index}) => {`, indent)
+        this.renderExecOutput(body, indent + 1)
+        this.line('});', indent)
+        this.renderExecOutput(completed, indent)
+        return
+      }
+      this.line(`for (let ${index} = ${this.exprForPin(this.findPin(node, 'FirstIndex', 'input'), 0)}; ${index} <= ${this.exprForPin(this.findPin(node, 'LastIndex', 'input'), 0)}; ${index}++) {`, indent)
       this.renderExecOutput(body, indent + 1)
       this.line('}', indent)
       this.renderExecOutput(completed, indent)
