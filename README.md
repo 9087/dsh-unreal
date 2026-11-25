@@ -27,7 +27,7 @@ is recorded with typed Details so the user can review what the agent did.
 
 | Surface | What it is |
 | --- | --- |
-| 72 model tools | core: `unreal_ping`, `unreal_get_editor_info`, `unreal_get_enum_info`, `unreal_get_struct_info`, `unreal_get_class_info`, `unreal_get_function_info`, `unreal_get_object_class`, `unreal_get_property_type`, `unreal_get_property_value`, `unreal_set_property_value`, `unreal_call_function`, `unreal_call_functions` (one-round-trip batch), `unreal_focus_pie`, `unreal_send_key`, `unreal_screenshot` (PIE game viewport or editor window), `unreal_get_recent_log` (in-memory editor diagnostics); Blueprint 6 + Blueprint-graph 16 + Level 6 + Asset 6 helpers; UMG runtime 6 and UMG design-time 13 tools in the optional `umg` / `umg_editor` groups (see `unreal_set_tool_groups`). All of them call through `CallFunction`. |
+| 94 model tools | core: `unreal_ping`, `unreal_get_editor_info`, `unreal_get_enum_info`, `unreal_get_struct_info`, `unreal_get_class_info`, `unreal_get_function_info`, `unreal_get_object_class`, `unreal_get_property_type`, `unreal_get_property_value`, `unreal_set_property_value`, `unreal_call_function`, `unreal_call_functions` (one-round-trip batch), `unreal_send_key`, `unreal_screenshot` (PIE game viewport or editor window), `unreal_get_recent_log` (in-memory editor diagnostics); Blueprint 6 + Blueprint-graph 16 + Level 6 + Asset 6 helpers; UMG runtime 6 and UMG design-time 15 tools in the optional `umg` / `umg_editor` groups (see `unreal_set_tool_groups`). All of them call through `CallFunction`. |
 | Reflection schema cache | `Get*Info` answers cached in memory (TTL + single flight + bounded), so display/schema lookups are not re-fetched per call |
 | Object→class cache | `GetObjectClass` answers cached per object path, so a level instance is typed once and reused |
 | Durable history | One record per call in the `dsh_unreal` storage domain, with the typed Details embedded in the record |
@@ -89,7 +89,6 @@ can read either form.
 | `unreal_get_blueprint_graphs` / `unreal_get_graph_nodes` / `unreal_get_node_pins` | `GetBlueprintGraphs` / `GetGraphNodes` / `GetNodePins` (through `CallFunction`) | `blueprint` / `graph` / `node` → `{ graphs }` / `{ nodes }` / `{ pins }`, pins include `LinkedPinIds` for exec-chain tracing |
 | `unreal_add_call_function_node` / `unreal_add_event_node` / `unreal_add_branch_node` / `unreal_add_component_bound_event_node` / `unreal_add_variable_get_node` / `unreal_add_variable_set_node` | matching graph functions, through `CallFunction` | graph + function/event/variable parameters → `{ nodeObjectPath }`; empty result becomes an `editorautomation/<Function>Failed` error with a log hint |
 | `unreal_add_blueprint_variable` / `unreal_connect_pins` / `unreal_set_pin_default_value` / `unreal_set_pin_default_object` / `unreal_set_node_position` / `unreal_remove_graph_node` / `unreal_remove_graph_nodes_by_class` | matching graph functions, through `CallFunction` | → `{ success: true, … }` / `{ removed }`; native `false`/empty failures point at `unreal_get_recent_log` |
-| `unreal_focus_pie` | `FocusPIEViewport` | — → `{ bSuccess, ErrorMessage }`; brings the PIE game viewport to the front, gives it keyboard focus and forces game-only input mode |
 | `unreal_send_key` | `SendKeyToPIE` | `keyName`, `focusViewport?` → `{ bSuccess, ErrorMessage }`; simulates one key press (down + up) inside the running PIE session, e.g. `Up`, `Left`, `R`, `Space` |
 
 Blueprint and level tools (like `unreal_get_recent_log`, `unreal_screenshot` and
@@ -101,9 +100,12 @@ arrives as nested JSON. Functions that report failure through a native `false` a
 tool errors with a hint to read `unreal_get_recent_log` for the engine reason.
 
 PIE input reaches a game's `PlayerController` only while the **game viewport** owns
-keyboard focus. `unreal_focus_pie` / `unreal_send_key` are the harness-side way to
-guarantee that; a focusable UMG widget that calls `SetKeyboardFocus` steals focus
-from the viewport and makes physical keys silently do nothing.
+keyboard focus. `unreal_send_key` is the harness-side way to guarantee that; a
+focusable UMG widget that calls `SetKeyboardFocus` steals focus from the viewport
+and makes physical keys silently do nothing. Screenshot capture brings the PIE
+viewport forward with Slate and sets keyboard focus without touching the
+PlayerController's cursor or input mode, so taking a screenshot does not hide the
+in-game mouse cursor.
 
 EditorAutomation's `CallFunction` dispatcher reports call-level failures (unknown object or function,
 parameter JSON that does not match the signature) as a result envelope: the tool raises them as

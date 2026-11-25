@@ -216,7 +216,8 @@ GameOver 后蛇冻结，只能复位
 
 - 通过 `GetNodePins` 的新字段 `LinkedPinIds` 做 exec 链正向追踪，定位断链位置。
 - PIE 属性读取 + `register_slate_post_tick_callback` 做逐帧状态采样（确认 Tick 是否执行）。
-- `EditorAutomationLibrary.FocusPIEViewport` / `SendKeyToPIE`：把 PIE 键盘焦点还给 GameViewport 并注入按键，
-  已在 `dsh-unreal` 中暴露为 `unreal_focus_pie` / `unreal_send_key`（不依赖 SlateBot）。
+- `EditorAutomationLibrary.FocusPIEViewport` / `SendKeyToPIE`：把 PIE 键盘焦点还给 GameViewport 并注入按键；
+  `SendKeyToPIE` 在 `dsh-unreal` 中暴露为 `unreal_send_key`（不依赖 SlateBot）。单独的聚焦工具已移除，
+  避免误用其 game-only input mode 副作用。
 - 嵌入 PIE 时若 Level 视口标签不可见，UMG Tick 不执行；改用 Play in New Window 验证。
 - UMG 游戏要收到物理键盘：焦点必须在 GameViewport 上，**不能**给根 Widget `SetKeyboardFocus`。

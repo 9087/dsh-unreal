@@ -92,7 +92,6 @@ export const OWNED_TOOLS: ReadonlySet<string> = new Set([
   'unreal_start_pie',
   'unreal_stop_pie',
   'unreal_is_pie_running',
-  'unreal_focus_pie',
   'unreal_send_key',
   'unreal_screenshot',
   'unreal_get_recent_log',
@@ -165,6 +164,8 @@ export const OWNED_TOOLS: ReadonlySet<string> = new Set([
   'unreal_get_umg_widget_children',
   'unreal_get_umg_widget_slot',
   'unreal_add_umg_widget',
+  'unreal_wrap_umg_widget',
+  'unreal_replace_umg_widget',
   'unreal_remove_umg_widget',
   'unreal_rename_umg_widget',
   'unreal_reparent_umg_widget',
@@ -1614,22 +1615,6 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
   }))
 
   ctx.tools.register(defineTool({
-    name: 'unreal_focus_pie',
-    description: 'Bring the running PIE game viewport to the front, give it keyboard focus, and force game-only input mode. Physical keys only reach a game PlayerController while the game viewport owns keyboard focus.',
-    parameters: {},
-    output: {
-      schema: { type: 'object', additionalProperties: true, properties: {} },
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
-    },
-    async execute(_args, exec) {
-      return await audited(deps, exec, { tool: 'unreal_focus_pie', params: {} }, async () => {
-        await requireEditorAutomationBool(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.core, 'FocusPIEViewport', {}, 'the PIE viewport')
-        return { value: { success: true }, resultSummary: 'PIE viewport focused' }
-      })
-    },
-  }))
-
-  ctx.tools.register(defineTool({
     name: 'unreal_send_key',
     description: 'Simulate one key press (down + up) inside the running PIE session, routed to the game viewport. KeyName is an FKey name such as Up, Down, Left, Right, W, A, S, D, R, Space, Enter.',
     parameters: {
@@ -2019,7 +2004,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
   ctx.tools.register(defineTool({
     name: 'unreal_send_key_with_modifiers',
     description:
-      'Send one key press (down + up) to the focused Slate widget with explicit Ctrl/Alt/Shift/Cmd modifiers, e.g. Ctrl+S or Shift+Tab. Focus a widget first with unreal_focus_widget, or the PIE viewport with unreal_focus_pie. Requires the umg group.',
+      'Send one key press (down + up) to the focused Slate widget with explicit Ctrl/Alt/Shift/Cmd modifiers, e.g. Ctrl+S or Shift+Tab. Focus a widget first with unreal_focus_widget. Requires the umg group.',
     parameters: {
       keyName: { type: 'string', required: true, description: 'FKey name, e.g. S, Tab, Space, Enter.' },
       control: { type: 'boolean', description: 'Hold Ctrl.' },
@@ -2046,7 +2031,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
 
   ctx.tools.register(defineTool({
     name: 'unreal_send_text',
-    description: 'Send a string as character events to the focused widget (focus it first with unreal_focus_widget or unreal_focus_pie). Requires the umg group.',
+    description: 'Send a string as character events to the focused widget (focus it first with unreal_focus_widget). Requires the umg group.',
     parameters: {
       text: { type: 'string', required: true, description: 'Text to type.' },
     },
@@ -3797,6 +3782,66 @@ ctx.tools.register(defineTool({
       return await audited(deps, exec, { tool: 'unreal_remove_umg_widget', params: { widget: widget } }, async () => {
         await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'RemoveWidget', { Widget: widget })
         return { value: { success: true }, resultSummary: 'widget removed' }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg_editor') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_wrap_umg_widget',
+    description: 'Wrap one template widget in a new panel widget. The wrapped widget keeps its object identity; the wrapper takes its slot. Only concrete UPanelWidget subclasses are accepted, and the widget must be attached, the root, or named-slot content.',
+    parameters: {
+      widget: { type: 'string', required: true, description: 'Template UWidget object path to wrap.' },
+      wrapperClassPath: { type: 'string', required: true, description: 'Wrapper UPanelWidget class path, e.g. /Script/UMG.VerticalBox.' },
+      widgetName: { type: 'string', description: 'Optional unique wrapper name; omitted generates one.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    async execute(args, exec) {
+      const widget = requiredString(args.widget, 'widget')
+      const wrapperClassPath = requiredString(args.wrapperClassPath, 'wrapperClassPath')
+      const widgetName = typeof args.widgetName === 'string' ? args.widgetName : ''
+      return await audited(deps, exec, { tool: 'unreal_wrap_umg_widget', params: { widget: widget, wrapperClassPath: wrapperClassPath, widgetName: widgetName } }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'WrapWidget', { Widget: widget, WrapperClassPath: wrapperClassPath, WidgetName: widgetName })
+        const objectPath = typeof result.payload === 'string' ? result.payload : ''
+        if (objectPath === '') {
+          throw new KitError('editorautomation/WrapWidgetFailed', 'The operation returned no wrapper path.', {
+            functionName: 'WrapWidget',
+            hint: 'The result envelope carries the engine reason; read the error message.',
+          })
+        }
+        return { value: { objectPath }, resultSummary: 'widget wrapped' }
+      })
+    },
+  }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg_editor') })
+
+  ctx.tools.register(defineTool({
+    name: 'unreal_replace_umg_widget',
+    description: 'Replace one template widget with a new multi-child panel, preserving its slot and moving its existing children into the replacement. Rejects widgets exposed as variables or referenced by Blueprint property/animation bindings.',
+    parameters: {
+      widget: { type: 'string', required: true, description: 'Template UWidget object path to replace.' },
+      replacementClassPath: { type: 'string', required: true, description: 'Replacement UPanelWidget class path; must accept multiple children.' },
+      widgetName: { type: 'string', description: 'Optional unique name; omitted keeps the old widget name.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    async execute(args, exec) {
+      const widget = requiredString(args.widget, 'widget')
+      const replacementClassPath = requiredString(args.replacementClassPath, 'replacementClassPath')
+      const widgetName = typeof args.widgetName === 'string' ? args.widgetName : ''
+      return await audited(deps, exec, { tool: 'unreal_replace_umg_widget', params: { widget: widget, replacementClassPath: replacementClassPath, widgetName: widgetName } }, async () => {
+        const result = await invokeEditorAutomation(deps, exec.signal, EDITOR_AUTOMATION_LIBRARIES.umgEditor, 'ReplaceWidget', { Widget: widget, ReplacementClassPath: replacementClassPath, WidgetName: widgetName })
+        const objectPath = typeof result.payload === 'string' ? result.payload : ''
+        if (objectPath === '') {
+          throw new KitError('editorautomation/ReplaceWidgetFailed', 'The operation returned no replacement path.', {
+            functionName: 'ReplaceWidget',
+            hint: 'The result envelope carries the engine reason; read the error message.',
+          })
+        }
+        return { value: { objectPath }, resultSummary: 'widget replaced' }
       })
     },
   }), { when: ({ agent }) => groupsFor(agent?.id === undefined ? undefined : String(agent.id)).has('umg_editor') })
