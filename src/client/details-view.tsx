@@ -1141,7 +1141,16 @@ export function DetailsView(props: {
     : base.filter(section =>
         !(section.kind === 'returns' && envelopeFailure(section.fields ?? []) !== undefined))
   const { inputs, outputs } = fallbackSections(visibleBase, props.params, props.result)
-  const sections = [...inputs, ...visibleBase, ...outputs]
+  // A failed `FEditorAutomationResult` envelope can arrive as a `returns` section
+  // even when the transport-level call was a success (for example a generic
+  // call_function). Keep that error last, after Output Parameters, so it reads as
+  // the outcome of the call rather than another input.
+  const errorReturns = visibleBase.filter(section =>
+    section.kind === 'returns' && envelopeFailure(section.fields ?? []) !== undefined)
+  const bodySections = errorReturns.length === 0
+    ? visibleBase
+    : visibleBase.filter(section => !errorReturns.includes(section))
+  const sections = [...inputs, ...bodySections, ...outputs, ...errorReturns]
   if (sections.length === 0 && props.failure === undefined) return undefined
   return (
     <RpcCallerContext.Provider value={props.caller}>

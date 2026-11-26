@@ -4,7 +4,8 @@
   "description": "DeepSeek Harness plugin: drive the Unreal EditorAutomation plugin through Remote Control, with a per-session durable call history in the right sidebar",
   "packageManager": "pnpm@11.22.0",
   "engines": {
-    "node": ">=24.0"
+    "node": ">=24.0",
+    "dsh": "^0.2.2-rc.1"
   },
   "author": "Wu Zhiwei",
   "repository": {
@@ -60,9 +61,9 @@
   "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-storage-domain": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-util-values": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-util-values": "^0.2.2-rc.1",
     "@deepseek-ai/schemastery": "~3.19.0",
     "react": "^18.2.0"
   },
@@ -85,11 +86,11 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-storage": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-storage-domain": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-storage-json": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-util-values": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-storage": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-storage-domain": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-storage-json": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-util-values": "0.2.2-rc.5",
     "@deepseek-ai/schemastery": "~3.19.0",
     "@playwright/test": "^1.64.0",
     "@types/node": "^22.0.0",

@@ -1415,6 +1415,27 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
             returnValueJson: returnText,
             returnType: kitResult.ReturnType ?? '',
           })
+          // FEditorAutomationResult is not an ordinary return value: a native
+          // failure must fail the tool call, or the card leaves the error in the
+          // middle of the Details sections and calls the operation successful.
+          const envelope = asAutomationEnvelope(returnParsed.value)
+          if (envelope !== undefined && !envelope.success) {
+            throw new KitError(
+              `editorautomation/${functionName}Failed`,
+              envelope.errorMessage === ''
+                ? `${functionName} failed (input error ${String(envelope.errorCode)}).`
+                : envelope.errorMessage,
+              {
+                functionName,
+                ...(envelope.hint === '' ? {} : { hint: envelope.hint }),
+                detail: JSON.stringify({
+                  ErrorCode: envelope.errorCode,
+                  ErrorMessage: envelope.errorMessage,
+                  Hint: envelope.hint,
+                }),
+              },
+            )
+          }
           return {
             value: {
               objectPath,

@@ -663,6 +663,28 @@ describe('tool calls and their history rows', () => {
     )
   })
 
+  it('unreal_call_function raises a failed FEditorAutomationResult envelope as a tool error', async () => {
+    mount([result({
+      ReturnValueJson: JSON.stringify({
+        bSuccess: 'false',
+        ErrorCode: '1',
+        ErrorMessage: "Replacement class '/Script/UMG.Border' cannot hold multiple children.",
+        Hint: 'Replace With only accepts panels that can preserve all existing children.',
+      }),
+      OutParametersJson: '{"WidgetPath":""}',
+      ReturnType: 'struct(/Script/EditorAutomation.EditorAutomationResult)',
+    })])
+
+    const error = await rejection(invoke('unreal_call_function', {
+      objectPath: '/Script/EditorAutomation.Default__EditorAutomationUMGEditorLibrary',
+      functionName: 'ReplaceWidget',
+      parametersJson: '{"Widget":"/Game/Test.Test:WidgetTree.Label"}',
+    }))
+
+    assert.match(error.message, /cannot hold multiple children/)
+    assert.equal(store.records[0]!.ok, false)
+  })
+
   it('unreal_call_functions sends one batch and parses per-call results', async () => {
     mount([{
       bSuccess: true,
